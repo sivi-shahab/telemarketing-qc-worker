@@ -1,0 +1,36 @@
+# Compose repo worker: worker + flower saja.
+# Postgres/redis/minio ada di compose repo API — di sini TIDAK ada `depends_on`
+# ke mereka (beda compose file), digantikan `restart: unless-stopped` supaya
+# worker mencoba lagi sampai infra siap.
+#
+# Network eksternal yang sama dengan API (buat sekali di host):
+#     docker network create qc-net
+networks:
+  default:
+    external: true
+    name: qc-net
+
+x-worker-image: &worker-image
+  build:
+    context: .
+    dockerfile: worker/Dockerfile
+  image: ${REGISTRY:-local}/qc-worker:${TAG:-latest}
+  env_file: .env
+  environment:
+    PYTHONPATH: /app
+    DWH_API_BASE_URL: ${DWH_API_BASE_URL:-http://host.docker.internal:8002}
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  restart: unless-stopped
+
+services:
+  worker:
+    <<: *worker-image
+    command: celery -A worker.celery_app worker --loglevel=info --concurrency=${CELERY_CONCURRENCY:-8}
+
+  # Flower memakai image yang sama persis — cuma command-nya beda.
+  flower:
+    <<: *worker-image
+    command: celery -A worker.celery_app flower --port=4005
+    ports:
+      - "4005:4005"

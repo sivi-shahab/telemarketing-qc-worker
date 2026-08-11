@@ -1,0 +1,20 @@
+.env
+credentials.md
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+.coverage
+.venv/
+venv/
+/tmp/
+*.log
+.DS_Store
+
+data/
+
+# Data nasabah asli. TIDAK BOLEH masuk repo ini dalam bentuk apa pun.
+csv_bank/
+*.csv

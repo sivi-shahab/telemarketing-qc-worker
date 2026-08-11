@@ -1,0 +1,15 @@
+celery[redis]
+sqlalchemy
+psycopg2-binary
+minio
+pdfplumber
+pypdfium2
+pillow
+openai
+requests
+pydantic-settings
+redis
+flower
+python-jose[cryptography]
+passlib[bcrypt]
+bcrypt==3.2.2
