@@ -32,5 +32,13 @@ services:
   flower:
     <<: *worker-image
     command: celery -A worker.celery_app flower --port=4005
+    # Blok ini MENIMPA `environment` dari anchor (bukan menggabung), jadi
+    # PYTHONPATH + DWH_API_BASE_URL wajib ditulis ulang di sini.
+    environment:
+      PYTHONPATH: /app
+      DWH_API_BASE_URL: ${DWH_API_BASE_URL:-http://host.docker.internal:8002}
+      # Flower 2.x menolak /api/* dengan 401 kecuali ini di-set (tidak ada flag
+      # CLI-nya). Port 4005 jadi terbuka tanpa auth — batasi di level firewall.
+      FLOWER_UNAUTHENTICATED_API: "true"
     ports:
       - "4005:4005"
