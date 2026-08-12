@@ -20,11 +20,11 @@ import shutil
 from datetime import datetime, timezone
 from functools import lru_cache
 
-from minio import Minio
 from openai import OpenAI, AzureOpenAI
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from services.multi_bucket_minio import build_minio_client
 from compliance.evaluator import evaluate
 from compliance.pdf_parser import build_transcript, latest_generated_timestamp
 from compliance.reference_data import (
@@ -47,19 +47,16 @@ TMP_ROOT = "/tmp/transcripts"
 @lru_cache()
 def _session_factory():
     settings = get_worker_settings()
-    engine = create_engine(settings.database_url, pool_pre_ping=True)
+    engine = create_engine(
+        settings.database_url, pool_pre_ping=True, connect_args=settings.db_connect_args
+    )
     return sessionmaker(bind=engine, autocommit=False, autoflush=False)
 
 
 @lru_cache()
-def _minio_client() -> Minio:
-    settings = get_worker_settings()
-    return Minio(
-        settings.minio_endpoint,
-        access_key=settings.minio_access_key,
-        secret_key=settings.minio_secret_key,
-        secure=False,
-    )
+def _minio_client():
+    # Minio biasa atau MultiBucketMinioClient, tergantung .env — API-nya sama.
+    return build_minio_client(get_worker_settings())
 
 
 @lru_cache()

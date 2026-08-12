@@ -10,16 +10,38 @@ class WorkerSettings(BaseSettings):
     postgres_db: str = "bankqa"
     postgres_user: str = "bankqa"
     postgres_password: str = "changeme"
+    # Schema tujuan semua tabel aplikasi. Kosong = 'public' (DB lokal).
+    postgres_schema: str = ""
 
     redis_url: str = "redis://redis:6378/0"
 
     minio_endpoint: str = "minio:4003"
     minio_access_key: str = "minioadmin"
     minio_secret_key: str = "changeme123"
+    # HTTPS wajib untuk cdn.bankmega.local; MinIO docker-internal tetap http.
+    minio_secure: bool = False
     minio_bucket_transcripts: str = "transcripts"
     minio_bucket_results: str = "results"
     minio_bucket_campaigns: str = "campaigns"
     minio_bucket_documents: str = "documents"
+    minio_bucket_audio: str = "audio"
+    minio_bucket_sales_database: str = "sales-database"
+
+    # Kredensial per-bucket (deployment CDN). Semua kosong = mode lama, yaitu
+    # satu client pakai minio_access_key/minio_secret_key di atas. Nilainya
+    # HANYA dari .env — sengaja tidak ada default berisi kredensial asli.
+    minio_access_key_transcripts: str = ""
+    minio_secret_key_transcripts: str = ""
+    minio_access_key_results: str = ""
+    minio_secret_key_results: str = ""
+    minio_access_key_campaigns: str = ""
+    minio_secret_key_campaigns: str = ""
+    minio_access_key_documents: str = ""
+    minio_secret_key_documents: str = ""
+    minio_access_key_audio: str = ""
+    minio_secret_key_audio: str = ""
+    minio_access_key_sales_database: str = ""
+    minio_secret_key_sales_database: str = ""
 
     # llm_base_url: str = "http://host.docker.internal:11444/v1"
     # llm_api_key: str = "dummy"
@@ -78,6 +100,16 @@ class WorkerSettings(BaseSettings):
             f"postgresql://{self.postgres_user}:{self.postgres_password}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
         )
+
+    @property
+    def db_connect_args(self) -> dict:
+        """connect_args untuk create_engine — mengarahkan search_path.
+
+        Model tidak menyebut schema sama sekali; kosong = 'public' (DB lokal).
+        """
+        if not self.postgres_schema:
+            return {}
+        return {"options": f"-csearch_path={self.postgres_schema},public"}
 
 
 @lru_cache()

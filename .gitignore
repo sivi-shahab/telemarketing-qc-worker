@@ -18,3 +18,5 @@ data/
 # Data nasabah asli. TIDAK BOLEH masuk repo ini dalam bentuk apa pun.
 csv_bank/
 *.csv
+.env.bak.20260812
+

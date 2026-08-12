@@ -14,10 +14,10 @@ Each document is handled independently so one failure does not block the others.
 import logging
 from functools import lru_cache
 
-from minio import Minio
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from services.multi_bucket_minio import build_minio_client
 from compliance.documents import build_ocr_request
 from compliance.ocr import ocr_document
 from compliance.reference_data import (
@@ -34,19 +34,16 @@ logger = logging.getLogger(__name__)
 @lru_cache()
 def _session_factory():
     settings = get_worker_settings()
-    engine = create_engine(settings.database_url, pool_pre_ping=True)
+    engine = create_engine(
+        settings.database_url, pool_pre_ping=True, connect_args=settings.db_connect_args
+    )
     return sessionmaker(bind=engine, autocommit=False, autoflush=False)
 
 
 @lru_cache()
-def _minio_client() -> Minio:
-    settings = get_worker_settings()
-    return Minio(
-        settings.minio_endpoint,
-        access_key=settings.minio_access_key,
-        secret_key=settings.minio_secret_key,
-        secure=False,
-    )
+def _minio_client():
+    # Minio biasa atau MultiBucketMinioClient, tergantung .env — API-nya sama.
+    return build_minio_client(get_worker_settings())
 
 
 def _download_object(object_name: str) -> bytes:
