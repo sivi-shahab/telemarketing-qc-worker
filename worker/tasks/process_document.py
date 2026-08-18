@@ -7,7 +7,8 @@ For each ``Document`` row of ``result_id`` still in ``pending``:
      CSVs by the customer/session ID derived from the result's source PDFs
   4. build the per-type prompt (with acuan injected) + strict JSON schema
   5. ocr_document(...) via Mistral Document AI -> structured verification JSON
-  6. save ocr_json + status done (or status failed + error_message)
+  6. normalise the numeric identifiers (NPWP/NIK/rekening) to digits-only
+  7. save ocr_json + status done (or status failed + error_message)
 
 Each document is handled independently so one failure does not block the others.
 """
@@ -18,7 +19,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from services.multi_bucket_minio import build_minio_client
-from compliance.documents import build_ocr_request
+from compliance.documents import build_ocr_request, normalize_ocr_json
 from compliance.ocr import ocr_document
 from compliance.reference_data import (
     build_document_reference,
@@ -112,7 +113,9 @@ def process_document(result_id: str):
                     api_key=settings.ocr_api_key,
                     model=settings.ocr_model,
                 )
-                crud.set_document_result(db, doc_id, ocr_json)
+                crud.set_document_result(
+                    db, doc_id, normalize_ocr_json(doc.doc_type, ocr_json)
+                )
                 logger.info("OCR done for document %s (%s)", doc_id, doc.doc_type)
             except Exception as exc:  # noqa: BLE001
                 logger.exception("OCR failed for document %s", doc_id)

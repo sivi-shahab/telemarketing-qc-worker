@@ -147,11 +147,34 @@ def process_transcript(result_id: str):
         if campaign is None:
             raise ValueError(f"Active campaign '{result.campaign}' not found")
 
+        # A campaign may exist as a PLACEHOLDER — created so it can be assigned to a
+        # role (see the Manage Role menu) before its QC config has been uploaded. Its
+        # prompt/KB/scorecard are empty, and feeding those to the LLM would produce a
+        # garbage evaluation that still lands as status=done. Fail loudly instead, the
+        # same way an unparseable transcript does above.
+        missing = [
+            label
+            for label, text in (
+                ("prompt", campaign.prompt_text),
+                ("scorecard", campaign.scorecard_text),
+                ("KB", campaign.kb_text),
+            )
+            if not (text or "").strip()
+        ]
+        if missing:
+            raise ValueError(
+                f"Campaign '{result.campaign}' belum punya konfigurasi QC: "
+                f"{', '.join(missing)} masih kosong. Upload dulu lewat menu "
+                "Upload Campaign sebelum memproses transkrip campaign ini."
+            )
+
         # 4b. build CASHLINE + CARD HOLDER reference data from the DB (looked up
         # by the customer/session ID derived from the earliest PDF filename) and
         # append it to the scorecard text, so the LLM can verify against it.
         customer_id = customer_id_from_filenames(sorted_filenames)
-        reference_text, ref_warnings, reference_raw = build_reference_data(customer_id, db)
+        reference_text, ref_warnings, reference_raw = build_reference_data(
+            customer_id, db, riplay_extraction=campaign.riplay_extraction
+        )
         for warn in ref_warnings:
             logger.warning("reference data (%s / id=%s): %s", result_id, customer_id, warn)
         scorecard_text = f"{campaign.scorecard_text}\n\n{reference_text}"
