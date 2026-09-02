@@ -9,7 +9,11 @@ celery_app = Celery(
     "bank_qa",
     broker=REDIS_URL,
     backend=REDIS_URL,
-    include=["worker.tasks.process_transcript", "worker.tasks.process_document"],
+    include=[
+        "worker.tasks.process_transcript",
+        "worker.tasks.process_document",
+        "worker.tasks.reprocess_ticket",
+    ],
 )
 
 celery_app.conf.update(

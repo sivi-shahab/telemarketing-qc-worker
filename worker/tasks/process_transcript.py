@@ -27,6 +27,7 @@ from sqlalchemy.orm import sessionmaker
 from services.multi_bucket_minio import build_minio_client
 from compliance.evaluator import evaluate
 from compliance.pdf_parser import build_transcript, latest_generated_timestamp
+from compliance.static_similarity import stamp_static_rules
 from compliance.reference_data import (
     build_reference_data,
     customer_id_from_filenames,
@@ -127,7 +128,9 @@ def process_transcript(result_id: str):
             raise ValueError(f"No transcript PDFs found for result {result_id}")
 
         # 3. build ordered transcript
-        sorted_filenames, messages, audio_duration = build_transcript(pdf_paths)
+        sorted_filenames, messages, audio_duration, audio_durations = build_transcript(
+            pdf_paths
+        )
         # Latest "Generated" timestamp across the ticket's PDFs — dates the ticket on
         # the Statistics AI-status chart (see compliance/pdf_parser.py). None-safe:
         # a NULL generated_at falls back to uploaded_at on that chart only.
@@ -196,6 +199,11 @@ def process_transcript(result_id: str):
             return_usage=True,
         )
 
+        # 5b. Cap versi aturan verifikasi statik ke dalam evaluasi (revamp 21 Agustus
+        # 2026), supaya seluruh permukaan pembaca memakai ambang yang benar tanpa perlu
+        # menebak dari waktu upload — dan tiket lama tidak ikut dinilai ulang.
+        evaluation = stamp_static_rules(evaluation)
+
         # 6. assemble final JSON
         completed_at = _utcnow()
         processing_sec = (completed_at - started_at).total_seconds()
@@ -205,6 +213,9 @@ def process_transcript(result_id: str):
             "source_files": sorted_filenames,
             "num_calls": len(sorted_filenames),
             "audio_duration": audio_duration,
+            # Rincian durasi per PDF (kolom Call Duration tata letak Demo). Total di
+            # atas tetap ditulis apa adanya: itu yang dibaca seluruh tampilan lain.
+            "audio_durations": audio_durations,
             "processed_at": completed_at.isoformat(),
             "processing_sec": round(processing_sec, 2),
             "evaluation": evaluation,
