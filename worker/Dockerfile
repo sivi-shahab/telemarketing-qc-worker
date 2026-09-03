@@ -11,7 +11,21 @@ ENV PYTHONPATH=/app \
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+
+# Sertifikat cdn.bankmega.local. Server hanya mengirim leaf-nya tanpa CA
+# penerbit ("Bank Mega Local Authority"), jadi leaf itu sendiri yang dipercaya
+# --- sama seperti trust store host, dan sama dengan image API.
+COPY certs/bankmegalocal.crt /usr/local/share/ca-certificates/bankmegalocal.crt
+RUN update-ca-certificates
+
+# minio memakai `ca_certs=os.environ.get("SSL_CERT_FILE") or certifi.where()`,
+# dan certifi TIDAK membaca trust store sistem -- jadi SSL_CERT_FILE wajib
+# ditunjuk eksplisit. Pasangannya `_build_http_client()` di
+# core/services/multi_bucket_minio.py yang menyalakan VERIFY_X509_PARTIAL_CHAIN.
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
+    REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
 
 COPY core/requirements.txt   /tmp/core-requirements.txt
 COPY worker/requirements.txt /tmp/worker-requirements.txt
