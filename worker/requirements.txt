@@ -1,7 +1,7 @@
 celery[redis]
 sqlalchemy
 psycopg2-binary
-minio
+boto3
 pdfplumber
 pypdfium2
 pillow

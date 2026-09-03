@@ -35,7 +35,7 @@ import logging
 from datetime import datetime, timezone
 from functools import lru_cache
 
-from minio.commonconfig import CopySource
+from services.s3_buckets import CopySource
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 

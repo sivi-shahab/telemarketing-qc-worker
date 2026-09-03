@@ -18,7 +18,7 @@ from functools import lru_cache
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from services.multi_bucket_minio import build_minio_client
+from services.s3_buckets import build_minio_client
 from compliance.documents import build_ocr_request, normalize_ocr_json
 from compliance.ocr import ocr_document
 from compliance.reference_data import (

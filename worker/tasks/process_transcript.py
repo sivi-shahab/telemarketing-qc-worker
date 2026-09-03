@@ -26,7 +26,7 @@ from openai import OpenAI, AzureOpenAI
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from services.multi_bucket_minio import build_minio_client
+from services.s3_buckets import build_minio_client
 from compliance.call_ownership import filter_calls_by_agent
 from compliance.evaluator import evaluate
 from compliance.pdf_parser import (
