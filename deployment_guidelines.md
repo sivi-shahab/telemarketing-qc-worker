@@ -145,7 +145,33 @@ container dibuat, bukan saat build).
 
 ---
 
-## 5. Masalah yang pernah terjadi
+## 5. Yang BUKAN tanggung jawab worker
+
+Celery worker di repo ini menangani pipeline transkrip/dokumen/reproses. Ia
+**tidak** menyentuh alur audio → STT sama sekali.
+
+Audio diproses oleh dua daemon di luar ketiga repo:
+
+```
+/data/script_antrian/producer_watch.py    inotify pada /data/recording
+/data/script_antrian/consumer_worker.py   POST ke :8000 (GPU0) / :8001 (GPU1)
+```
+
+Keduanya berjalan sebagai root dan **tidak** dikelola compose mana pun. Kalau
+unggahan audio tidak pernah selesai, periksa di sana lebih dulu — bukan di log
+Celery:
+
+```bash
+ps aux | grep -E "producer_watch|consumer_worker" | grep -v grep
+ls -la /data/recording/         # menumpuk = consumer tidak jalan
+```
+
+Menambah `CELERY_CONCURRENCY` tidak akan mempercepat transkripsi audio; yang
+membatasi adalah `MAX_INFLIGHT` di producer dan kapasitas dua GPU.
+
+---
+
+## 6. Masalah yang pernah terjadi
 
 | Gejala | Sebab & penanganan |
 |---|---|
