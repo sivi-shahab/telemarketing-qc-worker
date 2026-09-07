@@ -1,0 +1,12 @@
+# Dependensi kode bersama (db, compliance, services, prompt, sales_lookup).
+# API dan worker meng-install file ini LEBIH DULU, baru requirements-nya sendiri.
+sqlalchemy
+psycopg2-binary
+boto3
+openpyxl
+pdfplumber
+requests>=2.31
+pydantic-settings
+# Render halaman PDF RIPLAY jadi image sebelum dikirim ke model vision
+# (compliance/riplay.py, dipakai api/routers/campaign.py saat upload campaign).
+pypdfium2

@@ -23,3 +23,14 @@ csv_bank/
 
 # Backup sebelum cutover repo split (2026-09-02) — jangan ikut ter-commit
 *.bak.*
+
+# vendored core
+core/.env
+core/.env.bak.*
+core/data/
+core/csv_bank/
+core/*.log
+core/*.egg-info/
+core/.pytest_cache/
+core/.coverage
+core/compliance/*.xlsx

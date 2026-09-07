@@ -1,0 +1,416 @@
+[
+  {
+    "code": "A00",
+    "error_type": "Approved",
+    "category": "Approved",
+    "risk_base": "Approved",
+    "campaign": "",
+    "details": "Approved",
+    "label": "A00 — Approved"
+  },
+  {
+    "code": "A01",
+    "error_type": "Error - System",
+    "category": "System",
+    "risk_base": "O",
+    "campaign": "All Campaign",
+    "details": "Perubahan data pada CCBM < 3 bulan",
+    "label": "A01 — Perubahan data pada CCBM < 3 bulan"
+  },
+  {
+    "code": "A02",
+    "error_type": "Error - System",
+    "category": "System",
+    "risk_base": "O",
+    "campaign": "All Campaign",
+    "details": "Trouble System Recording",
+    "label": "A02 — Trouble System Recording"
+  },
+  {
+    "code": "A03",
+    "error_type": "Error - System",
+    "category": "System",
+    "risk_base": "O",
+    "campaign": "All Campaign",
+    "details": "Recording Not Found",
+    "label": "A03 — Recording Not Found"
+  },
+  {
+    "code": "A04",
+    "error_type": "Error - System",
+    "category": "System",
+    "risk_base": "O",
+    "campaign": "All Campaign",
+    "details": "Data blank (System Error)",
+    "label": "A04 — Data blank (System Error)"
+  },
+  {
+    "code": "A05",
+    "error_type": "Error - System",
+    "category": "System",
+    "risk_base": "O",
+    "campaign": "All Campaign",
+    "details": "Kartu Blokir/ XPAC setelah submit",
+    "label": "A05 — Kartu Blokir/ XPAC setelah submit"
+  },
+  {
+    "code": "A06",
+    "error_type": "Error - System",
+    "category": "System",
+    "risk_base": "O",
+    "campaign": "",
+    "details": "Transaksi sudah terproses/Double Proses oleh Channel lain",
+    "label": "A06 — Transaksi sudah terproses/Double Proses oleh Channel lain"
+  },
+  {
+    "code": "A07",
+    "error_type": "Error - System",
+    "category": "System",
+    "risk_base": "O",
+    "campaign": "Megabill",
+    "details": "Data Sudah Terdaftar di Sistem Recurring (Sudah Terdaftar)",
+    "label": "A07 — Data Sudah Terdaftar di Sistem Recurring (Sudah Terdaftar)"
+  },
+  {
+    "code": "A08",
+    "error_type": "Error - System",
+    "category": "System",
+    "risk_base": "O",
+    "campaign": "NTB/Reisntate/Add On/Supplement",
+    "details": "Kartu Tipe yang sama sudah dimiliki CH",
+    "label": "A08 — Kartu Tipe yang sama sudah dimiliki CH"
+  },
+  {
+    "code": "A09",
+    "error_type": "Error - System",
+    "category": "System",
+    "risk_base": "O",
+    "campaign": "All Campaign",
+    "details": "Product Information (Butuh konfirmasi dari Team Product apakah Biller tersebut memiliki kerja sama dengan Bank Mega)",
+    "label": "A09 — Product Information (Butuh konfirmasi dari Team Product apakah Biller…"
+  },
+  {
+    "code": "A10",
+    "error_type": "Error - System",
+    "category": "System",
+    "risk_base": "O",
+    "campaign": "Aktivasi",
+    "details": "Kartu sudah/Belum Aktif",
+    "label": "A10 — Kartu sudah/Belum Aktif"
+  },
+  {
+    "code": "A11",
+    "error_type": "Error - System",
+    "category": "System limitation",
+    "risk_base": "O",
+    "campaign": "All Campaign",
+    "details": "Terdapat tanda baca dalam data input",
+    "label": "A11 — Terdapat tanda baca dalam data input"
+  },
+  {
+    "code": "A12",
+    "error_type": "Error - System",
+    "category": "System",
+    "risk_base": "O",
+    "campaign": "All Campaign",
+    "details": "CH tidak ada di data terundang",
+    "label": "A12 — CH tidak ada di data terundang"
+  },
+  {
+    "code": "A13",
+    "error_type": "Error - System",
+    "category": "System Validation",
+    "risk_base": "O",
+    "campaign": "Cashline/LOC",
+    "details": "Salah input yang tidak menimbulkan financial loss & agent no access  system",
+    "label": "A13 — Salah input yang tidak menimbulkan financial loss & agent no access s…"
+  },
+  {
+    "code": "A14",
+    "error_type": "Error - System",
+    "category": "System",
+    "risk_base": "O",
+    "campaign": "",
+    "details": "Suplement belum dapat diproses karena basic card rejected",
+    "label": "A14 — Suplement belum dapat diproses karena basic card rejected"
+  },
+  {
+    "code": "A15",
+    "error_type": "Error - System",
+    "category": "System",
+    "risk_base": "O",
+    "campaign": "",
+    "details": "Base on CCBM  ada perubahan No HP",
+    "label": "A15 — Base on CCBM ada perubahan No HP"
+  },
+  {
+    "code": "B01",
+    "error_type": "Error - Human",
+    "category": "Data Input",
+    "risk_base": "O",
+    "campaign": "",
+    "details": "Penulisan Nama Typo/Kurang 1 huruf/ Pelafalan Bahasa Inggris salah",
+    "label": "B01 — Penulisan Nama Typo/Kurang 1 huruf/ Pelafalan Bahasa Inggris salah"
+  },
+  {
+    "code": "B02",
+    "error_type": "Error - Human",
+    "category": "Data Input",
+    "risk_base": "L",
+    "campaign": "All Campaign",
+    "details": "Salah input data dengan risiko low yang berakibat pada kesalahan proses transaksi",
+    "label": "B02 — Salah input data dengan risiko low yang berakibat pada kesalahan pros…"
+  },
+  {
+    "code": "B03",
+    "error_type": "Error - Human",
+    "category": "Data Input",
+    "risk_base": "M",
+    "campaign": "All Campaign",
+    "details": "Salah input data dengan risiko medium yang berakibat pada kesalahan proses transaksi",
+    "label": "B03 — Salah input data dengan risiko medium yang berakibat pada kesalahan p…"
+  },
+  {
+    "code": "B04",
+    "error_type": "Error - Human",
+    "category": "Data Input",
+    "risk_base": "M",
+    "campaign": "All Campaign",
+    "details": "Tidak Dilakukan Pengkinian Data",
+    "label": "B04 — Tidak Dilakukan Pengkinian Data"
+  },
+  {
+    "code": "B05",
+    "error_type": "Error - Human",
+    "category": "Data Input",
+    "risk_base": "H",
+    "campaign": "Cashline/LOC",
+    "details": "Salah input data dengan risiko tinggi yang dapat berakibat financial loss",
+    "label": "B05 — Salah input data dengan risiko tinggi yang dapat berakibat financial…"
+  },
+  {
+    "code": "B06",
+    "error_type": "Error - Human",
+    "category": "Data checking",
+    "risk_base": "L",
+    "campaign": "All Campaign",
+    "details": "Kartu Blokir/ XPAC sebelum submit (TMS base)",
+    "label": "B06 — Kartu Blokir/ XPAC sebelum submit (TMS base)"
+  },
+  {
+    "code": "B07",
+    "error_type": "Error - Human",
+    "category": "Data checking",
+    "risk_base": "L",
+    "campaign": "Megapay",
+    "details": "Transaksi tidak sesuai system (IITH)",
+    "label": "B07 — Transaksi tidak sesuai system (IITH)"
+  },
+  {
+    "code": "B08",
+    "error_type": "Error - Human",
+    "category": "Dokumen Pendukung",
+    "risk_base": "L",
+    "campaign": "",
+    "details": "Type File Doc. terlampir kurang/tidak sesuai",
+    "label": "B08 — Type File Doc. terlampir kurang/tidak sesuai"
+  },
+  {
+    "code": "B09",
+    "error_type": "Error - Human",
+    "category": "Dokumen Pendukung",
+    "risk_base": "M",
+    "campaign": "All Campaign",
+    "details": "Doc Unclear/ Buram / Tidak Jelas/ Expired/Tidak Melampirkan Doc pendukung",
+    "label": "B09 — Doc Unclear/ Buram / Tidak Jelas/ Expired/Tidak Melampirkan Doc pendu…"
+  },
+  {
+    "code": "B10",
+    "error_type": "Error - Human",
+    "category": "TnC Product",
+    "risk_base": "M",
+    "campaign": "All Campaign",
+    "details": "Inaccurate Product Feature/Script/Fee",
+    "label": "B10 — Inaccurate Product Feature/Script/Fee"
+  },
+  {
+    "code": "B11",
+    "error_type": "Error - Human",
+    "category": "TnC Product",
+    "risk_base": "M",
+    "campaign": "All Campaign",
+    "details": "Ketentuan Pembelian Product (Subscription Requirement)",
+    "label": "B11 — Ketentuan Pembelian Product (Subscription Requirement)"
+  },
+  {
+    "code": "B12",
+    "error_type": "Error - Human",
+    "category": "Probbing",
+    "risk_base": "L",
+    "campaign": "All Campaign",
+    "details": "Agent tidak menyebutkan nama, tidak menyebutkan dari Bank mega atau hal lain yang berhubungan dengan standard script",
+    "label": "B12 — Agent tidak menyebutkan nama, tidak menyebutkan dari Bank mega atau h…"
+  },
+  {
+    "code": "B13",
+    "error_type": "Error - Human",
+    "category": "Voice Mistake",
+    "risk_base": "M",
+    "campaign": "",
+    "details": "Voice Mistake",
+    "label": "B13 — Voice Mistake"
+  },
+  {
+    "code": "B14",
+    "error_type": "Error - Human",
+    "category": "Open Data",
+    "risk_base": "M",
+    "campaign": "",
+    "details": "Open data diluar data statik namun belum verifikasi",
+    "label": "B14 — Open data diluar data statik namun belum verifikasi"
+  },
+  {
+    "code": "B15",
+    "error_type": "Error - Human",
+    "category": "Open Data",
+    "risk_base": "H",
+    "campaign": "All Campaign",
+    "details": "Open data yang termasuk data statik namun belum verifikasi",
+    "label": "B15 — Open data yang termasuk data statik namun belum verifikasi"
+  },
+  {
+    "code": "B16",
+    "error_type": "Error - Human",
+    "category": "Verification",
+    "risk_base": "M",
+    "campaign": "All Campaign",
+    "details": "Verfikasi Statik Berhasil, Verifikasi Dinamik kurang/tidak sesuai",
+    "label": "B16 — Verfikasi Statik Berhasil, Verifikasi Dinamik kurang/tidak sesuai"
+  },
+  {
+    "code": "B17",
+    "error_type": "Error - Human",
+    "category": "Verification",
+    "risk_base": "H",
+    "campaign": "All Campaign",
+    "details": "Tidak ada Verifikasi/ verifikasi statik kurang/tidak berhasil",
+    "label": "B17 — Tidak ada Verifikasi/ verifikasi statik kurang/tidak berhasil"
+  },
+  {
+    "code": "B18",
+    "error_type": "Error - Human",
+    "category": "Legal Statement",
+    "risk_base": "H",
+    "campaign": "All Campaign",
+    "details": "Tidak Ada Legal Statement",
+    "label": "B18 — Tidak Ada Legal Statement"
+  },
+  {
+    "code": "B19",
+    "error_type": "Error - Human",
+    "category": "Over Promise",
+    "risk_base": "M",
+    "campaign": "",
+    "details": "Menjanjikan hal-hal diluar kewenangan",
+    "label": "B19 — Menjanjikan hal-hal diluar kewenangan"
+  },
+  {
+    "code": "B20",
+    "error_type": "Error - Human",
+    "category": "Offering bukan kepada CH",
+    "risk_base": "H",
+    "campaign": "All Campaign",
+    "details": "Offering bukan kepada CH",
+    "label": "B20 — Offering bukan kepada CH"
+  },
+  {
+    "code": "B21",
+    "error_type": "Error - Human",
+    "category": "Never Apply",
+    "risk_base": "H+T",
+    "campaign": "All Campaign",
+    "details": "Tidak ada penawaran - Never Apply",
+    "label": "B21 — Tidak ada penawaran - Never Apply"
+  },
+  {
+    "code": "B22",
+    "error_type": "Error - Human",
+    "category": "Pemalsuan",
+    "risk_base": "H+T",
+    "campaign": "All Campaign",
+    "details": "Pemalsuan Data dan atau Dokumen",
+    "label": "B22 — Pemalsuan Data dan atau Dokumen"
+  },
+  {
+    "code": "B23",
+    "error_type": "Error - Human",
+    "category": "Kutipan/Imbalan",
+    "risk_base": "H+T",
+    "campaign": "All Campaign",
+    "details": "Meminta/ Menerima imbalan / hadiah baik kepada sesama telesales, dan/atau kepada pemegang kartu atau calon pemegang kartu",
+    "label": "B23 — Meminta/ Menerima imbalan / hadiah baik kepada sesama telesales, dan/…"
+  },
+  {
+    "code": "B24",
+    "error_type": "Error - Human",
+    "category": "TnC Product",
+    "risk_base": "L",
+    "campaign": "",
+    "details": "Customer Cancel Supplement (crosselling), namun sudah tersubmit",
+    "label": "B24 — Customer Cancel Supplement (crosselling), namun sudah tersubmit"
+  },
+  {
+    "code": "B25",
+    "error_type": "Error - Human",
+    "category": "TnC Product",
+    "risk_base": "L",
+    "campaign": "",
+    "details": "No HP Suppl sama dengan Basic",
+    "label": "B25 — No HP Suppl sama dengan Basic"
+  },
+  {
+    "code": "B26",
+    "error_type": "Error - Human",
+    "category": "Legal Statement",
+    "risk_base": "M",
+    "campaign": "",
+    "details": "Legal Statement Bersyarat",
+    "label": "B26 — Legal Statement Bersyarat"
+  },
+  {
+    "code": "C01",
+    "error_type": "Error - Customer",
+    "category": "Cancel by Customer",
+    "risk_base": "O",
+    "campaign": "",
+    "details": "Customer Cancel sesudah tutup telpon (CH call CS/email)",
+    "label": "C01 — Customer Cancel sesudah tutup telpon (CH call CS/email)"
+  },
+  {
+    "code": "C02",
+    "error_type": "Error - Customer",
+    "category": "Pemakaian Limit",
+    "risk_base": "O",
+    "campaign": "Cashline/LOC",
+    "details": "Terdapat perubahan Avalaible Limit, karena terdapat pemakaian Kartu Kredit",
+    "label": "C02 — Terdapat perubahan Avalaible Limit, karena terdapat pemakaian Kartu K…"
+  },
+  {
+    "code": "C03",
+    "error_type": "Error - Customer",
+    "category": "Dokumen Pendukung",
+    "risk_base": "O",
+    "campaign": "All Campaign TMS2",
+    "details": "Doc Unclear/ Buram / Tidak Jelas/ Expired/Tidak Melampirkan Doc pendukung",
+    "label": "C03 — Doc Unclear/ Buram / Tidak Jelas/ Expired/Tidak Melampirkan Doc pendu…"
+  },
+  {
+    "code": "C04",
+    "error_type": "Error - Customer",
+    "category": "Informasi Customer",
+    "risk_base": "O",
+    "campaign": "",
+    "details": "Microsite tidak sesuai ketentuan (data dengan lampiran document)",
+    "label": "C04 — Microsite tidak sesuai ketentuan (data dengan lampiran document)"
+  }
+]
