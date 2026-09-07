@@ -1,7 +1,6 @@
 # Image worker — self-contained, TIDAK mengandalkan bind-mount `.:/app`.
 # Image yang sama dipakai service `worker` dan `flower` (bedanya cuma command).
-# Build context = root repo (submodule `core/` harus sudah ter-checkout).
-#
+# # Build context = root repo (core/ ikut di dalam repo ini).
 #   docker build -f worker/Dockerfile -t qc-worker .
 FROM python:3.11-slim
 
@@ -20,10 +19,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY certs/bankmegalocal.crt /usr/local/share/ca-certificates/bankmegalocal.crt
 RUN update-ca-certificates
 
-# minio memakai `ca_certs=os.environ.get("SSL_CERT_FILE") or certifi.where()`,
-# dan certifi TIDAK membaca trust store sistem -- jadi SSL_CERT_FILE wajib
-# ditunjuk eksplisit. Pasangannya `_build_http_client()` di
-# core/services/multi_bucket_minio.py yang menyalakan VERIFY_X509_PARTIAL_CHAIN.
+# boto3/botocore membaca CA dari SSL_CERT_FILE / REQUESTS_CA_BUNDLE, bukan dari
+# trust store sistem secara otomatis -- jadi keduanya ditunjuk eksplisit.
+# Pasangannya ada di core/services/s3_buckets.py.
 ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
     REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
 
