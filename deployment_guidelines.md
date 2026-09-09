@@ -60,6 +60,8 @@ ke trust store image, sama seperti API. Jangan menggantinya dengan `verify=False
 
 ## 2. Menyalakan
 
+### Dengan Compose (default)
+
 ```bash
 cd /data/scorecard_v2/telemarketing-qc-worker
 docker compose up -d --build
@@ -82,6 +84,53 @@ Penggantinya `restart: unless-stopped`.
 Catatan saat menyunting compose: blok `environment` milik `flower` **menimpa**
 milik anchor, bukan menggabung — jadi `PYTHONPATH` dan `DWH_API_BASE_URL` harus
 ditulis ulang di sana.
+
+### Tanpa Compose (`docker run`)
+
+Tetap **satu image** untuk keduanya — tidak perlu Dockerfile terpisah. Argumen
+setelah nama image menimpa `CMD`, persis seperti `command:` di compose.
+
+```bash
+IMG=registry.gitlab.<domain>/<group>/qc-worker:latest
+docker pull "$IMG"        # atau: docker build -f worker/Dockerfile -t "$IMG" .
+
+# worker — `CMD` bawaan image sudah menjalankan ini tanpa --concurrency;
+# ditulis eksplisit supaya jumlah pekerja terlihat
+docker run -d --name qc-worker --network qc-net \
+  --env-file .env -e PYTHONPATH=/app \
+  -e DWH_API_BASE_URL=http://host.docker.internal:8002 \
+  --add-host host.docker.internal:host-gateway \
+  --restart unless-stopped "$IMG" \
+  celery -A worker.celery_app worker --loglevel=info --concurrency=8
+
+# flower — image sama, argumen menimpa CMD
+docker run -d --name qc-flower --network qc-net \
+  --env-file .env -e PYTHONPATH=/app \
+  -e DWH_API_BASE_URL=http://host.docker.internal:8002 \
+  -e FLOWER_UNAUTHENTICATED_API=true \
+  --add-host host.docker.internal:host-gateway \
+  -p 4005:4005 --restart unless-stopped "$IMG" \
+  celery -A worker.celery_app flower --port=4005
+```
+
+Di sini `-e` **menambah** di atas `--env-file` (tidak menimpa seperti blok
+`environment` di compose), jadi tidak ada jebakan yang disebut di atas.
+
+Yang tidak lagi diurus compose dan harus ditulis sendiri: `--restart`,
+`--network qc-net`, `-p 4005:4005`, dan `--add-host`. `CELERY_CONCURRENCY` juga
+tidak dibaca otomatis — nilainya ditulis langsung di flag `--concurrency`.
+
+Memperbarui (tidak ada `up -d` yang mengurus ini):
+
+```bash
+docker pull "$IMG"
+docker rm -f qc-worker qc-flower
+# lalu jalankan ulang dua perintah `docker run` di atas
+```
+
+Nama container berbeda dari versi compose, jadi perintah `docker logs` dan
+`docker exec` di bagian berikutnya memakai `qc-worker`, bukan
+`telemarketing-qc-worker-worker-1`.
 
 ---
 
