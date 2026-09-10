@@ -258,6 +258,7 @@ def _make_client(settings, access_key: str, secret_key: str):
                 # membuat perhitungan hash tidak cocok di sisi MinIO.
                 "payload_signing_enabled": False,
             },
+            proxies={},
             connect_timeout=5,
             read_timeout=30,
         ),
