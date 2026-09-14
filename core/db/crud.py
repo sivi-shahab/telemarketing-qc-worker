@@ -997,6 +997,61 @@ def delete_results_by_ticket_id(db: Session, ticket_id: str) -> int:
     return count
 
 
+# Sepotong-sepotong saat menyaring ``ticket_id`` dalam jumlah besar. Delete All
+# bisa menyasar puluhan ribu tiket sekaligus, dan satu ``IN (...)`` sepanjang itu
+# ditolak driver jauh sebelum Postgres sempat melihatnya.
+_TICKET_ID_CHUNK = 1_000
+
+
+def _ticket_id_chunks(ticket_ids) -> list:
+    """``ticket_ids`` yang sudah dibersihkan, dipecah menjadi potongan seukuran IN."""
+    tids = sorted({str(t).strip() for t in (ticket_ids or []) if str(t or "").strip()})
+    return [tids[i:i + _TICKET_ID_CHUNK] for i in range(0, len(tids), _TICKET_ID_CHUNK)]
+
+
+def _results_by_ticket_ids_q(db: Session, chunk: list):
+    return db.query(Result).filter(
+        func.split_part(Result.source_files[0].astext, "_", 1).in_(chunk)
+    )
+
+
+def results_count_by_ticket_ids(db: Session, ticket_ids) -> int:
+    """Berapa baris Result yang dimiliki sekumpulan ticket id.
+
+    Dipakai modal konfirmasi Delete All untuk menyebut ongkos SEBENARNYA:
+    penghapusan memakai ticket id, jadi entry lain milik tiket yang sama ikut
+    hilang walaupun tidak cocok dengan filter di layar. Menghitungnya dari baris
+    yang cocok filter saja akan melaporkan angka yang terlalu kecil.
+    """
+    return sum(_results_by_ticket_ids_q(db, chunk).count() for chunk in _ticket_id_chunks(ticket_ids))
+
+
+def delete_results_by_ticket_ids(db: Session, ticket_ids) -> int:
+    """Versi jamak dari :func:`delete_results_by_ticket_id` — tombol Delete All.
+
+    Menghapus SELURUH baris Result milik tiap ticket id beserta baris turunannya
+    (``result_data``, ``documents``, ``qc_status_requests``, ``error_code_appeals``)
+    lewat ON DELETE CASCADE, dan mengembalikan jumlah baris yang terhapus.
+
+    Satu commit untuk semuanya, bukan satu commit per tiket: perintah ini berangkat
+    dari SATU konfirmasi Admin, jadi separuh terhapus adalah keadaan yang tidak
+    pernah diminta siapa pun. Daftar kosong tidak menyentuh apa pun — penting,
+    karena ``IN ()`` yang kosong justru cocok dengan nol baris dan sebuah salah
+    ketik di pemanggil tidak boleh berubah menjadi "hapus semua".
+    """
+    chunks = _ticket_id_chunks(ticket_ids)
+    if not chunks:
+        return 0
+    count = 0
+    for chunk in chunks:
+        for row in _results_by_ticket_ids_q(db, chunk).all():
+            db.delete(row)
+            count += 1
+    if count:
+        db.commit()
+    return count
+
+
 def get_active_campaign(db: Session, name: str) -> Optional[Campaign]:
     return (
         db.query(Campaign)
