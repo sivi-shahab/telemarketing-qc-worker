@@ -2459,14 +2459,43 @@ def list_reprocess_jobs(
 
 
 def running_reprocess_job(db: Session, scope: Optional[str] = None) -> Optional[ReprocessJob]:
-    """Job yang masih berjalan, kalau ada — dicari lewat status, bukan dengan
-    memeriksa N job terakhir, supaya job lama yang tersangkut tetap terlihat.
+    """Job yang benar-benar masih berjalan, kalau ada.
 
     ``scope`` menyaring jenis job: ``"campaign"`` untuk job massal saja (dipakai
     layar Reprocess All Ticket saat menyambung kembali job-nya), ``None`` untuk
     keduanya (dipakai pengaman sebelum menjalankan job massal baru).
+
+    Status ``running`` saja TIDAK cukup, dan itu pelajaran mahal: fungsi ini yang
+    menolak Reprocess All dengan 409 "masih ada job massal berjalan", jadi satu job
+    yang tersangkut memblokir menu itu selamanya — jebakan yang sama dengan yang
+    mengunci tombol Delete per ticket, hanya satu tingkat di atasnya.
+
+    Yang menentukan karena itu bukan kolom status job, melainkan apakah masih ada
+    ITEM yang benar-benar aktif di dalamnya — aturan yang sama persis dengan
+    penanda per-ticket (:func:`_reprocess_item_active_clause`). Dua keadaan langsung
+    ikut terurus olehnya:
+
+    * job yang itemnya tinggal ``pending`` tua — task Celery-nya tidak pernah
+      sampai ke worker;
+    * job yang SELURUH itemnya sudah selesai tetapi statusnya tidak pernah
+      berpindah, karena ``finish_reprocess_job_if_complete`` dipanggil worker dan
+      worker itu mati tepat sebelum item terakhir.
+
+    Keduanya tidak punya pekerjaan tersisa, jadi keduanya tidak boleh memblokir
+    apa pun.
     """
-    q = db.query(ReprocessJob).filter(ReprocessJob.status == "running")
+    q = (
+        db.query(ReprocessJob)
+        .filter(ReprocessJob.status == "running")
+        .filter(
+            db.query(ReprocessJobItem)
+            .filter(
+                ReprocessJobItem.job_id == ReprocessJob.id,
+                _reprocess_item_active_clause(),
+            )
+            .exists()
+        )
+    )
     if scope:
         q = q.filter(ReprocessJob.scope == scope)
     return q.order_by(desc(ReprocessJob.created_at)).first()
