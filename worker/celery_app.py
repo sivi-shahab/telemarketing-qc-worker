@@ -25,6 +25,17 @@ celery_app.conf.update(
     worker_concurrency=CELERY_CONCURRENCY,
     task_acks_late=True,
     task_reject_on_worker_lost=True,
-    task_time_limit=1800,
-    task_soft_time_limit=1500,
+    # Batas keras dinaikkan dari 1800 -> 3000 (10 September 2026) untuk alur penilaian
+    # PARALEL: satu tiket kini menembakkan sampai 3 panggilan LLM berbarengan
+    # (compliance.parallel_pass, lihat ThreadPoolExecutor di
+    # tasks/process_transcript.py), dan tiket dengan > 3 rekaman valid berjalan dalam
+    # beberapa gelombang. Endpoint melambat saat dibebani serentak — 5 panggilan
+    # sekaligus pernah menembus 1800. Batas lunak 2400 memberi worker ~10 menit untuk
+    # menutup rapi sebelum SIGKILL.
+    #
+    # CELERY_CONCURRENCY di atas sengaja TIDAK ikut dinaikkan: menambah worker paralel
+    # di atas penilaian yang sudah paralel melipatgandakan beban serentak ke endpoint
+    # yang sama — persis keadaan yang membuat batas ini perlu dinaikkan.
+    task_time_limit=3000,
+    task_soft_time_limit=2400,
 )
