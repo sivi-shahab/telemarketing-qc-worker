@@ -33,6 +33,10 @@ DOCUMENT_TYPES: dict[str, dict] = {
         "label": "Cover Buku Tabungan",
         "prompt_module": "prompt.ocr_cover_buku_tabungan",
     },
+    "mus_exception_confirmation": {
+        "label": "Konfirmasi Pengecualian MUS",
+        "prompt_module": "prompt.ocr_mus_exception",
+    },
 }
 
 
@@ -310,6 +314,175 @@ def cashline_doc_requirements(result_json) -> list[dict]:
     return list(found.values())
 
 
+# --------------------------------------------------------------------------
+# Konfirmasi pengecualian MUS untuk penyakit whitelist (11 September 2026).
+# --------------------------------------------------------------------------
+# Lihat docs/csv_bank/11 September 2026/MUS_logic_update.md. Saat
+# ``mus_exemption.status`` == EXEMPT karena penyakit yang TERMASUK
+# ``mus_exemption.DISEASE_WHITELIST`` (``mus_exemption.disease_listed``,
+# diklasifikasi LLM), Bank Mega meminta screenshot email konfirmasi sebelum
+# pengecualiannya benar-benar berlaku — lihat
+# ``error_codes.apply_mus_exception_document_status``.
+MUS_EXCEPTION_DOC_TYPE = "mus_exception_confirmation"
+
+
+def mus_exception_doc_requirements(result_json) -> list[dict]:
+    """Dokumen konfirmasi yang diminta karena pengecualian MUS berasal dari penyakit
+    whitelist.
+
+    Bentuk kembaliannya sama dengan ``card_holder_doc_requirements`` /
+    ``cashline_doc_requirements``. Dipicu status ``EXEMPT`` (belum digerbang, bacaan
+    mentah LLM) DAN ``PENDING`` (sudah digerbang read-time, dokumen masih ditunggu) —
+    sama seperti kedua fungsi saudaranya, supaya permintaan dokumen tidak hilang
+    begitu penangguhan dimulai.
+    """
+    evaluation = _evaluation_any(result_json)
+    if not isinstance(evaluation, dict):
+        return []
+    block = evaluation.get("mus_exemption")
+    if not isinstance(block, dict):
+        return []
+    if str(block.get("status") or "").strip().upper() not in ("EXEMPT", "PENDING"):
+        return []
+    if not block.get("disease_listed"):
+        return []
+    return [{
+        "field": "mus_exemption",
+        "doc_type": MUS_EXCEPTION_DOC_TYPE,
+        "similarity": None,
+        "label": "Pengecualian MUS",
+    }]
+
+
+def mus_exception_doc_types(result_json) -> list[str]:
+    """Jenis dokumen wajib khusus pengecualian MUS: ``[]`` atau
+    ``["mus_exception_confirmation"]``."""
+    return [req["doc_type"] for req in mus_exception_doc_requirements(result_json)]
+
+
+def mus_exception_doc_confirmed(ticket_id, ocr_by_doc_type: dict) -> bool:
+    """True bila dokumen ``mus_exception_confirmation`` milik tiket ini MEMBUKTIKAN
+    pengecualian: OCR sudah selesai, menemukan kalimat persetujuan, DAN ticket ID
+    yang terbaca pada email cocok dengan ``ticket_id`` yang sedang dinilai.
+
+    ``ocr_by_doc_type`` = ``{doc_type: ocr_json}`` milik SATU tiket (lihat
+    ``crud.document_ocr_by_result``). Pencocokan ticket ID case-insensitive + trim —
+    keputusan 11 September 2026 TIDAK menyerahkan perbandingan ini ke LLM, supaya
+    model tidak sekadar menggemakan ticket ID yang "diharapkan" alih-alih membaca
+    dokumennya. Dokumen yang belum/gagal OCR dianggap belum mengonfirmasi apa pun.
+    """
+    ocr_json = (ocr_by_doc_type or {}).get(MUS_EXCEPTION_DOC_TYPE)
+    if not isinstance(ocr_json, dict):
+        return False
+    if not ocr_json.get("approval_statement_present"):
+        return False
+    found = str(ocr_json.get("ticket_id_found") or "").strip().casefold()
+    expected = str(ticket_id or "").strip().casefold()
+    return bool(found) and bool(expected) and found == expected
+
+
+# --------------------------------------------------------------------------
+# Pembebasan kewajiban dokumen (3 September 2026).
+# --------------------------------------------------------------------------
+# Tiket yang SUDAH kena pelanggaran non-tolerable dari transkrip tidak lagi diminta
+# dokumen pendukung apa pun. Alasannya sederhana: vonisnya sudah Not Qualified dan
+# tidak ada dokumen yang bisa membatalkannya, jadi meminta berkas hanya memindahkan
+# pekerjaan sia-sia ke Team Leader Sales — dan menerbitkan B09 karena berkas itu
+# tidak datang berarti menghukum kelalaian yang tidak pernah punya jalan keluar.
+#
+# Dicabut SELURUHNYA (permintaan 3 September 2026), bukan sekadar disembunyikan
+# tulisannya: tidak ada permintaan dokumen, tidak ada tenggat H+2, dan slot
+# unggahnya tertutup.
+#
+# Yang dibaca adalah evaluasi PRA-status-dokumen — itulah yang membuat kalimatnya
+# berbunyi "error LAIN yang non-tolerable". Item scorecard yang jatuh JUSTRU karena
+# urusan dokumen (SC_CL_23_1/23_2 setelah tenggat lewat) belum ada pada titik itu,
+# jadi pembebasan ini tidak bisa membenarkan dirinya sendiri.
+
+
+def _evaluation_any(result_json) -> "dict | None":
+    """``_evaluation_of`` yang tidak mensyaratkan adanya ``card_holder_verification``.
+
+    Dipakai pemeriksaan non-tolerable, yang bahannya ``scorecard_result``."""
+    if not isinstance(result_json, dict):
+        return None
+    evaluation = result_json.get("evaluation")
+    if isinstance(evaluation, dict):
+        return evaluation
+    keys = ("scorecard_result", "card_holder_verification")
+    return result_json if any(k in result_json for k in keys) else None
+
+
+def _codes_awaiting_document(evaluation) -> set:
+    """Item scorecard yang kegagalannya SEDANG MENUNGGU dokumen pendukung.
+
+    Inilah satu-satunya item yang boleh dikecualikan dari uji "error non-tolerable
+    lain": kegagalannya belum final, dan berkas yang diminta memang bisa
+    menyembuhkannya. Dipetakan dari kewajiban dokumen yang benar-benar berlaku pada
+    evaluasi ini —
+
+      * band verifikasi statik -> ``SC_CL_23_1`` / ``SC_CL_23_2`` (KTP / KK);
+      * cashline nama pemilik rekening -> ``SC_CL_13`` (cover buku tabungan);
+
+    — bukan dari daftar kode tetap. Bedanya menentukan: sebuah ``SC_CL_23_2`` yang
+    jatuh karena nama ibu kandung MISMATCH DI BAWAH band tidak menunggu dokumen apa
+    pun (tidak ada berkas yang membatalkannya), jadi ia memang "error lain" dan
+    membebaskan tiket dari kewajiban dokumen yang tersisa. Daftar kode tetap akan
+    mengecualikannya juga, dan pembebasan itu tidak akan pernah berlaku.
+
+    Peta field -> item diambil dari ``error_codes`` supaya tidak ada literal yang
+    bisa menyimpang. Diimpor malas: ``error_codes`` sendiri mengimpor modul ini.
+    """
+    from compliance.error_codes import (
+        CARD_HOLDER_STATIC_SCORECARD,
+        CASHLINE_FIELD_SCORECARD,
+    )
+
+    codes = set()
+    for req in card_holder_doc_requirements(evaluation):
+        code = CARD_HOLDER_STATIC_SCORECARD.get(req["field"])
+        if code:
+            codes.add(code)
+    for req in cashline_doc_requirements(evaluation):
+        code = CASHLINE_FIELD_SCORECARD.get(req["field"])
+        if code:
+            codes.add(code)
+    return codes
+
+
+def doc_requirements_waived(result_json) -> bool:
+    """True bila kewajiban dokumen tiket ini DICABUT karena sudah ada pelanggaran
+    non-tolerable **lain** (lihat catatan di atas).
+
+    Kata "lain" yang menanggung seluruh beban aturan ini: item scorecard yang jatuh
+    JUSTRU karena verifikasi yang sedang dibuktikan dokumen itu
+    (``_codes_awaiting_document``) TIDAK dihitung. Tanpa pengecualian itu aturannya
+    memakan dirinya sendiri — MISMATCH nama pemilik rekening menjatuhkan SC_CL_13
+    (non-tolerable), pembebasan lalu mencabut permintaan cover buku tabungan yang
+    seharusnya menyembuhkannya, dan jalur dokumen yang sengaja dibuka 31 Agustus 2026
+    tertutup lagi.
+    """
+    evaluation = _evaluation_any(result_json)
+    if not isinstance(evaluation, dict):
+        return False
+    rows = evaluation.get("scorecard_result")
+    if not isinstance(rows, list):
+        return False
+    awaiting = None
+    for item in rows:
+        it = item or {}
+        if str(it.get("tolerable") or "").strip().upper() != "NO":
+            continue
+        if str(it.get("status") or "").strip().upper() != "BELUM_SESUAI":
+            continue
+        if awaiting is None:              # dihitung sekali, hanya bila perlu
+            awaiting = _codes_awaiting_document(evaluation)
+        if str(it.get("item_code") or "").strip().upper() in awaiting:
+            continue
+        return True
+    return False
+
+
 def required_doc_requirements(result_json) -> list[dict]:
     """SELURUH dokumen pendukung yang diminta hasil evaluasi — band verifikasi
     statik (KK/KTP) DITAMBAH cashline (cover buku tabungan).
@@ -318,8 +491,17 @@ def required_doc_requirements(result_json) -> list[dict]:
     yang wajib untuk tiket ini". Memisahkannya per sumber pernah membuat satu
     jalur tahu dan jalur lain tidak — persis cara cover buku tabungan sebelumnya
     diminta di kalimat ``reason`` tetapi tidak pernah diwajibkan sistem.
+
+    Kosong bila ``doc_requirements_waived`` — tiket yang sudah kena pelanggaran
+    non-tolerable lain tidak diminta dokumen apa pun.
     """
-    return card_holder_doc_requirements(result_json) + cashline_doc_requirements(result_json)
+    if doc_requirements_waived(result_json):
+        return []
+    return (
+        card_holder_doc_requirements(result_json)
+        + cashline_doc_requirements(result_json)
+        + mus_exception_doc_requirements(result_json)
+    )
 
 
 def required_doc_types(result_json) -> list[str]:
@@ -403,11 +585,19 @@ def build_ocr_request(doc_type: str, reference: dict | None = None) -> tuple[str
     prompt: kalimatnya sama untuk keempat jenis, dan menyalinnya empat kali adalah
     empat kesempatan untuk lupa memperbaruinya. Ditempel SESUDAH ``build_prompt``
     supaya tidak ikut ``str.format`` yang mengisi nilai acuan.
+
+    Dilewati untuk jenis dokumen yang TIDAK ikut klasifikasi ``jenis_dokumen``
+    (``doc_type`` di luar ``_DOC_KIND_EXPECTED``, mis. ``mus_exception_confirmation``
+    — bukan dokumen identitas dengan acuan bank, schema-nya sendiri tidak punya
+    field itu, jadi instruksinya hanya akan membingungkan tanpa efek).
     """
     from prompt._common import DOC_KIND_INSTRUCTION
 
     module = load_prompt_module(doc_type)
-    return module.build_prompt(reference or {}) + DOC_KIND_INSTRUCTION, module.SCHEMA
+    prompt = module.build_prompt(reference or {})
+    if doc_type in _DOC_KIND_EXPECTED:
+        prompt += DOC_KIND_INSTRUCTION
+    return prompt, module.SCHEMA
 
 
 # Slot dokumen -> nilai ``jenis_dokumen`` yang dianggap BENAR untuk slot itu.
@@ -448,3 +638,68 @@ def wrong_document_type(doc_type: str, ocr_json) -> "dict | None":
         detected.replace("_", " ").title(),
     )
     return {"expected": label, "detected": detected_label}
+
+
+# --------------------------------------------------------------------------
+# Dokumen yang jenisnya benar tetapi ISINYA tidak cocok dengan acuan bank
+# (3 September 2026).
+# --------------------------------------------------------------------------
+# Sampai tanggal ini sebuah dokumen dianggap MEMENUHI kewajibannya begitu jenisnya
+# benar — hasil OCR-nya tidak ikut menentukan sama sekali. Akibatnya nyata di
+# lapangan: 140909co8Q mengunggah NPWP bernomor 357691724502000 terhadap acuan
+# 257681957526000 (similarity 0) dan tiketnya langsung lolos; 011013QyLm mengunggah
+# KK yang OCR-nya sendiri menyimpulkan "bukan KK atas nama nasabah" (nilai terbaca
+# kosong) dan tiketnya juga lolos. Dokumen diminta untuk MEMBUKTIKAN sebuah data,
+# jadi berkas yang tidak membuktikan apa pun tidak boleh menutup kewajibannya.
+#
+# Sejak sekarang: dokumen yang salah satu baris verifikasinya TIDAK cocok dianggap
+# BELUM memenuhi. Konsekuensinya mengikuti jalur yang sudah ada — tiket tetap
+# PENDING selama tenggat H+2 berjalan dan jatuh Not Qualified (B09) bila tenggat
+# lewat — persis seperti dokumen yang keliru jenisnya.
+#
+# Yang SENGAJA tidak dihitung sebagai ketidakcocokan, karena semuanya berarti
+# "tidak bisa dipastikan" dan menghukum atas ketidaktahuan lebih buruk daripada
+# melewatkannya:
+#   * OCR belum/gagal selesai (``ocr_json`` kosong atau bukan bentuk yang dikenal);
+#   * baris tanpa nilai ACUAN — data bank yang tidak tersedia bukan kesalahan
+#     nasabah maupun agent, dan prompt-nya memang menulis ``match=false`` di situ;
+#   * dokumen yang jenisnya keliru — itu sudah ditangani ``wrong_document_type``
+#     (C03) dan tidak perlu dilaporkan dua kali.
+
+
+def _blank(value) -> bool:
+    return value is None or not str(value).strip()
+
+
+def document_verification_mismatches(doc_type: str, ocr_json) -> list[dict]:
+    """Baris verifikasi OCR yang TIDAK cocok dengan acuan bank untuk satu dokumen.
+
+    ``[{"field", "acuan", "document", "similarity"}, ...]``; kosong bila dokumennya
+    cocok atau ketidakcocokannya tidak bisa dipastikan (lihat catatan di atas)."""
+    if not isinstance(ocr_json, dict):
+        return []
+    if wrong_document_type(doc_type, ocr_json):
+        return []          # sudah dilaporkan sebagai C03 salah jenis
+    rows = ocr_json.get("verifications")
+    if not isinstance(rows, list):
+        return []
+    out = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if _blank(row.get("acuan")):
+            continue       # tidak ada pembanding -> tidak tahu, bukan tidak cocok
+        if row.get("match"):
+            continue
+        out.append({
+            "field": str(row.get("field") or "").strip(),
+            "acuan": row.get("acuan"),
+            "document": row.get("document"),
+            "similarity": row.get("similarity"),
+        })
+    return out
+
+
+def document_verification_failed(doc_type: str, ocr_json) -> bool:
+    """True bila dokumen di slot ``doc_type`` tidak membuktikan acuan banknya."""
+    return bool(document_verification_mismatches(doc_type, ocr_json))

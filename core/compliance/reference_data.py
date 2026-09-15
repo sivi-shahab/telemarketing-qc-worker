@@ -11,6 +11,7 @@ field di bawah tidak berubah.
 Fields built from several columns are joined left->right with a single space.
 """
 import json
+import re
 
 from sqlalchemy.orm import Session
 
@@ -127,6 +128,128 @@ def _clean(value) -> str:
     return ("" if value is None else str(value)).strip()
 
 
+# --- cust_name annotation ---------------------------------------------------
+# Sejak export NTB 7 September 2026, kolom TMS ``cust_name`` tidak lagi berisi nama
+# nasabah saja melainkan nama + anotasi penawaran, dipisah underscore:
+#
+#     GAGA NUGRAHA_45jt_300_175_NPWP_C5.0jt
+#     ^nama       ^limit ^%    ^bunga ^dok  ^opsi CLD
+#
+#   limit  ``45jt``   limit pengajuan yang ditawarkan (Rp 45.000.000)
+#   %      ``300``    besar penawaran terhadap limit kartu kredit berjalan — 300%
+#                     dari limit 15jt menghasilkan penawaran 45jt
+#   bunga  ``175``    bunga terhitung per bulan x100 → 1,75%
+#   NPWP              pengajuan ini mensyaratkan unggahan NPWP
+#   C5.0jt            bila 45jt tidak disetujui, nasabah boleh dicairkan 5jt tetapi
+#                     memotong limit kartu aslinya (program CLD)
+#
+# Nasabah NEW TO BANK tidak punya limit kartu berjalan, jadi segmen limit+persen
+# diganti satu penanda ``NTB`` dan yang tersisa hanya bunganya:
+#
+#     SWASTIKA AJENG DEWANTI_NTB_220        → bunga 2,20%
+#
+# Anotasi ini HARUS dibuang sebelum ``cust_name`` dipakai. Nama beranotasi menjadi
+# ``nama_acuan`` OCR KTP dan ``nama_anak`` OCR KK — OCR lalu membandingkan nama di
+# kartu dengan "NAMA_45jt_300_175_NPWP" dan tidak akan pernah cocok — serta menjadi
+# ``customer_name`` di tabel Results halaman Sales Agent.
+#
+# [ADAPTASI] Alasan ASAL di repo monolit juga menyebut penautan ke Ascend by
+# ``CUST_LOCAL_NAME`` (terukur: 0 dari 53 tiket seed cocok mentah, 53 dari 53
+# setelah dibersihkan). Di sini alasan itu TIDAK berlaku lagi: baris CARD HOLDER
+# dicocokkan Aplikasi A by ``no-ktpkitas``, bukan by nama — lihat docstring modul.
+# Yang tersisa, dan sudah cukup, adalah dua pemakaian di atas.
+_ANNOT_LIMIT_RE = re.compile(r"^(\d+(?:[.,]\d+)?)\s*jt$", re.IGNORECASE)
+_ANNOT_CLD_RE = re.compile(r"^C\s*(\d+(?:[.,]\d+)?)\s*jt$", re.IGNORECASE)
+_ANNOT_NUM_RE = re.compile(r"^\d{2,4}$")
+
+
+def _annot_rupiah(text: str) -> int | None:
+    try:
+        return int(round(float(text.replace(",", ".")) * 1_000_000))
+    except ValueError:
+        return None
+
+
+def parse_cust_name(value) -> dict:
+    """Pecah ``cust_name`` TMS jadi nama nasabah + anotasi penawarannya.
+
+    Mengembalikan dict dengan kunci ``nama`` (selalu terisi bila ada isinya),
+    ``limit_penawaran`` / ``opsi_cld`` (rupiah), ``persen_limit``, ``bunga_persen``,
+    ``butuh_npwp``, ``new_to_bank``, dan ``raw``.
+
+    Nama yang TIDAK beranotasi dikembalikan apa adanya — termasuk bila kebetulan
+    memuat underscore. Pemotongan hanya terjadi kalau minimal satu segmen sesudah
+    underscore pertama benar-benar berbentuk anotasi yang dikenal, supaya nama asli
+    yang aneh tidak ikut terpangkas.
+    """
+    raw = _clean(value)
+    out = {
+        "nama": raw,
+        "limit_penawaran": None,
+        "persen_limit": None,
+        "bunga_persen": None,
+        "butuh_npwp": False,
+        "opsi_cld": None,
+        "new_to_bank": False,
+        "raw": raw,
+    }
+    if "_" not in raw:
+        return out
+
+    head, *tail = raw.split("_")
+    segs = [s.strip() for s in tail if s.strip()]
+    if not segs:
+        # Ekor underscore kosong ("HATA SEPTIAWAN_12jt_80_209_") sudah tersaring di
+        # atas; sisa di sini berarti nama yang berakhiran underscore saja.
+        return {**out, "nama": head.strip()}
+
+    recognised = False
+    nums: list[str] = []
+    for seg in segs:
+        up = seg.upper()
+        if up == "NTB":
+            out["new_to_bank"] = True
+            recognised = True
+        elif up == "NPWP":
+            out["butuh_npwp"] = True
+            recognised = True
+        elif _ANNOT_CLD_RE.match(seg):
+            out["opsi_cld"] = _annot_rupiah(_ANNOT_CLD_RE.match(seg).group(1))
+            recognised = True
+        elif _ANNOT_LIMIT_RE.match(seg):
+            out["limit_penawaran"] = _annot_rupiah(_ANNOT_LIMIT_RE.match(seg).group(1))
+            recognised = True
+        elif _ANNOT_NUM_RE.match(seg):
+            nums.append(seg)
+            recognised = True
+        else:
+            # Segmen tak dikenal: bukan anotasi, jadi bukan nama beranotasi.
+            return out
+
+    if not recognised:
+        return out
+
+    # Angka telanjang: nasabah NTB hanya membawa bunga; selain itu persen dulu,
+    # baru bunga. Urutannya posisional — angkanya sendiri tidak bisa dibedakan
+    # (220 muncul sebagai bunga, 200 sebagai persen).
+    if out["new_to_bank"]:
+        if nums:
+            out["bunga_persen"] = int(nums[0]) / 100
+    elif len(nums) >= 2:
+        out["persen_limit"] = int(nums[0])
+        out["bunga_persen"] = int(nums[1]) / 100
+    elif len(nums) == 1:
+        out["bunga_persen"] = int(nums[0]) / 100
+
+    out["nama"] = head.strip()
+    return out
+
+
+def customer_name_of(value) -> str:
+    """Nama nasabah bersih dari ``cust_name`` TMS — lihat ``parse_cust_name``."""
+    return parse_cust_name(value)["nama"]
+
+
 def _mask_card_number(value) -> str | None:
     """Mask the middle 8 digits of a card number, keeping the first and last 4
     visible. Empty or a literal ``NTB`` yields ``None`` (rendered as "NTB" —
@@ -216,7 +339,7 @@ def build_reference_data(
     if cashline_row is None:
         warnings.append(f"no campaign_cashline_ntb row with result_id == '{customer_id}'")
     else:
-        cust_name = _clean(cashline_row.get("cust_name"))
+        cust_name = customer_name_of(cashline_row.get("cust_name"))
         for field, col in CASHLINE_SINGLE_COLS.items():
             cashline_ref[field] = _clean(cashline_row.get(col)) or None
         cashline_ref["bunga"] = compute_bunga(cashline_ref)
@@ -309,14 +432,19 @@ def build_document_reference(
             else None
         }
         for field, col in DOC_KTP_SINGLE_COLS.items():
-            reference[field] = (_clean(cashline_row.get(col)) or None) if cashline_row else None
+            # ``nama_acuan`` berasal dari ``cust_name`` yang beranotasi penawaran —
+            # tanpa dibersihkan, OCR KTP membandingkan nama di kartu dengan
+            # "NAMA_45jt_300_175_NPWP" dan tidak akan pernah cocok.
+            raw = cashline_row.get(col) if cashline_row else None
+            value = customer_name_of(raw) if col == "cust_name" else _clean(raw)
+            reference[field] = (value or None) if cashline_row else None
     elif doc_type == "cover_buku_tabungan":
         reference = {
             field: (_clean(cashline_row.get(col)) or None) if cashline_row else None
             for field, col in DOC_COVER_BUKU_TABUNGAN_COLS.items()
         }
     elif doc_type == "kk":
-        cust_name = _clean(cashline_row.get("cust_name")) if cashline_row else ""
+        cust_name = customer_name_of(cashline_row.get("cust_name")) if cashline_row else ""
         # nama_anak = si nasabah (cust_name); customer dicari via API by no-ktpkitas
         # sehingga OCR tahu 'nama ibu kandung' siapa yang harus dibaca/diverifikasi.
         reference = {"nama_ibu_kandung_acuan": None, "nama_anak": cust_name or None}
@@ -360,7 +488,7 @@ def get_customer_info(
     # [FIX] cust_name sebelumnya dipakai tanpa pernah di-assign -> NameError setiap
     # kali cashline_row ditemukan. Diambil dari cashline row, sama seperti
     # build_reference_data() dan get_credit_limit().
-    info["customer_name"] = _clean(cashline_row.get("cust_name")) or None
+    info["customer_name"] = customer_name_of(cashline_row.get("cust_name")) or None
 
     # Nomor Kartu: CUST_CR_CARD1 dari current_cc_scmcustp, dicocokkan App A by
     # ``no-ktpkitas`` (dari cashline) — BUKAN lagi by CUST_LOCAL_NAME.

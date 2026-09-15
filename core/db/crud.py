@@ -234,6 +234,20 @@ def result_json_map(db: Session, result_ids: list[str]) -> dict:
     return out
 
 
+def set_result_stage(db: Session, result_id: str, stage: str) -> None:
+    """Catat checkpoint pipeline TERAKHIR yang selesai (``_Tahap.catat`` di
+    worker/tasks/process_transcript.py), commit langsung supaya API bisa membaca
+    progres tiket ini SELAGI masih diproses (14 September 2026 — lihat
+    ``PROCESSING_STAGES`` di process_transcript.py untuk urutan & labelnya).
+
+    Sengaja TIDAK memanggil ``get_result``/raise bila baris tidak ada: ini
+    dipanggil di tengah pipeline murni untuk keperluan tampilan, jadi kegagalannya
+    tidak boleh pernah menggagalkan pemrosesan tiket itu sendiri — pemanggil
+    (``_Tahap.catat``) yang membungkusnya dengan try/except."""
+    db.query(Result).filter(Result.id == result_id).update({"current_stage": stage})
+    db.commit()
+
+
 def save_result_data(db: Session, result_id: str, result_json: dict) -> ResultData:
     data = ResultData(result_id=uuid.UUID(str(result_id)), result_json=result_json)
     db.add(data)
@@ -2060,6 +2074,40 @@ def list_qc_assignments(db: Session) -> list[QcAssignment]:
     return db.query(QcAssignment).order_by(QcAssignment.assigned_at.desc()).all()
 
 
+def bulk_assign_tickets_to_qc(
+    db: Session, pairs, assigned_by_username: str = None
+) -> int:
+    """Assign banyak tiket sekaligus dalam SATU commit. Mengembalikan jumlah baris baru.
+
+    ``pairs`` = ``[(ticket_id, qc_username), ...]``. Tiket yang SUDAH punya assignment
+    dilewati, bukan ditimpa — pemanggilnya (tombol Auto Assign di menu Assign Ticket)
+    memang hanya membagikan sisa yang belum dibagi, dan menimpa di sini akan
+    memindahkan tiket yang sedang dikerjakan QC lain. Karena itu fungsi ini TIDAK
+    memanggil ``assign_ticket_to_qc``: selain menimpa, fungsi itu commit per tiket.
+    """
+    rows = [(str(t or "").strip(), str(u or "").strip()) for t, u in (pairs or [])]
+    rows = [(t, u) for t, u in rows if t and u]
+    if not rows:
+        return 0
+    # Satu baris per tiket, jadi tabelnya sekecil jumlah tiket yang pernah dibagikan —
+    # memuat seluruh ticket_id sekali jauh lebih murah daripada IN(...) ribuan nilai.
+    taken = {r[0] for r in db.query(QcAssignment.ticket_id).all() if r[0]}
+    now = datetime.utcnow()
+    created = 0
+    for tid, username in rows:
+        if tid in taken:
+            continue
+        db.add(QcAssignment(
+            ticket_id=tid, qc_username=username,
+            assigned_by_username=assigned_by_username, assigned_at=now,
+        ))
+        taken.add(tid)
+        created += 1
+    if created:
+        db.commit()
+    return created
+
+
 def assigned_ticket_ids_for_qc(db: Session, qc_username: str) -> list[str]:
     """Ticket ids assigned to ``qc_username`` (case-insensitive, trimmed)."""
     key = (qc_username or "").strip().casefold()
@@ -2148,6 +2196,90 @@ def qc_manual_check_history(db: Session, result_id: str) -> list[QcManualCheck]:
         .order_by(QcManualCheck.id.asc())
         .all()
     )
+
+
+_QC_CHECK_EVENTS = ("usul", "konfirmasi")
+
+
+def qc_manual_status_marks(db: Session, result_ids: list[str]) -> dict:
+    """``{result_id: {"checked_at", "checked_by", "approved_at", "approved_by"}}``.
+
+    * **checked** — kapan (dan oleh siapa) QC men-SUBMIT Manual Status tiket itu,
+      diambil dari kejadian TERAKHIR bertipe ``usul``/``konfirmasi``. Vonis yang
+      ditetapkan LANGSUNG oleh Team Leader QC / SPQ Head (``set_langsung``) sengaja
+      tidak dihitung: di situ tidak ada QC yang memeriksa.
+    * **approved** — kapan (dan oleh siapa) vonis itu disetujui atasan, hanya
+      terisi bila vonisnya sudah FINAL (``_manual_verdict`` mengembalikan nilai).
+      Sumbernya SPQ Head bila keputusan finalnya di sana, selain itu Team Leader QC.
+
+    Satu query per tabel (tidak ada N+1); ``result_ids`` boleh kosong.
+    """
+    ids = [str(r).strip() for r in (result_ids or []) if str(r).strip()]
+    if not ids:
+        return {}
+    uuids = [uuid.UUID(i) for i in ids]
+    out: dict = {}
+    for row in (
+        db.query(QcStatusEvent)
+        .filter(QcStatusEvent.result_id.in_(uuids),
+                QcStatusEvent.event.in_(_QC_CHECK_EVENTS))
+        .order_by(QcStatusEvent.created_at, QcStatusEvent.id)
+        .all()
+    ):
+        # Terlama dulu -> penulisan terakhir yang menang = kejadian TERBARU.
+        out[str(row.result_id)] = {
+            "checked_at": row.created_at,
+            "checked_by": row.actor_username,
+            "approved_at": None,
+            "approved_by": None,
+        }
+    for req in (
+        db.query(QcStatusRequest).filter(QcStatusRequest.result_id.in_(uuids)).all()
+    ):
+        if _manual_verdict(req) is None:
+            continue    # belum final -> belum ada approval
+        if (req.approval_status or "") == "approved":
+            at, by = req.reviewed_at, req.reviewed_by_username
+        else:
+            at, by = req.tl_qc_reviewed_at, req.tl_qc_username
+        entry = out.setdefault(str(req.result_id), {
+            "checked_at": None, "checked_by": None,
+            "approved_at": None, "approved_by": None,
+        })
+        entry["approved_at"] = at
+        entry["approved_by"] = by
+    return out
+
+
+def qc_checked_ticket_ids_by_qc(db: Session) -> dict:
+    """``{qc_username (casefold): {ticket_id, ...}}`` — tiket yang Manual Status-nya
+    sudah di-submit oleh QC bersangkutan.
+
+    Ticket id diturunkan dari berkas sumber hasilnya, definisi yang sama dengan
+    ``qc_assignments.ticket_id``. Dipakai kolom **Checked** di Hierarki Failure Rate.
+    """
+    events = (
+        db.query(QcStatusEvent.result_id, QcStatusEvent.actor_username)
+        .filter(QcStatusEvent.event.in_(_QC_CHECK_EVENTS))
+        .all()
+    )
+    if not events:
+        return {}
+    rids = {str(r) for r, _ in events}
+    ticket_by_result: dict = {}
+    for r in db.query(Result.id, Result.source_files).filter(
+        Result.id.in_([uuid.UUID(i) for i in rids])
+    ).all():
+        sf = r.source_files or []
+        if sf and isinstance(sf[0], str) and sf[0]:
+            ticket_by_result[str(r.id)] = sf[0].split("_", 1)[0]
+    out: dict = defaultdict(set)
+    for rid, actor in events:
+        u = (actor or "").strip().casefold()
+        tid = ticket_by_result.get(str(rid))
+        if u and tid:
+            out[u].add(tid)
+    return out
 
 
 def customer_ids_uploaded_by_role(db: Session, role: str) -> list[str]:

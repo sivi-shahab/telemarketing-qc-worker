@@ -10,3 +10,8 @@ pydantic-settings
 # Render halaman PDF RIPLAY jadi image sebelum dikirim ke model vision
 # (compliance/riplay.py, dipakai api/routers/campaign.py saat upload campaign).
 pypdfium2
+# Ikut terbawa pdfplumber, tetapi ditulis eksplisit karena dipakai LANGSUNG oleh
+# compliance/ocr.py -> image_bytes_to_pdf (konversi screenshot JPEG/PNG jadi PDF
+# satu halaman sebelum masuk jalur OCR yang hanya menerima PDF). Dependensi
+# langsung tidak boleh bergantung pada dependensi transitif paket lain.
+pillow

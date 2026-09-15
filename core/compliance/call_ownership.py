@@ -307,3 +307,174 @@ def fix_speaker_roles(segments) -> list:
     swap = {labels[0]: labels[1], labels[1]: labels[0]}
     return [{**seg, "speaker": swap.get(seg.get("speaker"), seg.get("speaker"))}
             for seg in segments]
+
+
+# --------------------------------------------------------------------------
+# NAMA ON-AIR: cocok atau tidak dengan NAME ONLINE roster (7 September 2026)
+# --------------------------------------------------------------------------
+# Permintaan bisnis: SC_CL_2 ("Agent menyebutkan nama agent") tidak lagi cukup dipenuhi
+# dengan memperkenalkan diri — nama yang disebut harus SESUAI kolom NAME ONLINE pada
+# roster sales. Ketidaksesuaian digagalkan.
+#
+# PEMERIKSAANNYA SENGAJA TIDAK MEMAKAI ``detect_agent_names`` SENDIRIAN. Detektor itu
+# dibangun untuk menemukan pemilik panggilan, dan untuk keperluan ITU kebocorannya tidak
+# berbahaya (syarat kedua menyaringnya). Dipakai sebagai penentu vonis, ia menghukum
+# orang yang tidak bersalah: pengukuran atas 111 rekaman seed 7 September menemukan
+# 37 rekaman yang NAME ONLINE-nya JELAS ADA di transkrip tetapi detektornya justru
+# menangkap kata biasa — "PUSPA" terbaca ['kredit','notifikasi','diskon'], "AUREL"
+# terbaca ['apresiasi','aplikasi','SMS'].
+#
+# Karena itu ada dua kesempatan sebelum sebuah tiket dinyatakan tidak cocok:
+#   1. nama yang TERDETEKSI sebagai perkenalan cocok dengan NAME ONLINE; atau
+#   2. NAME ONLINE muncul sebagai KATA di dalam transkrip — bukti bahwa agent
+#      menyebutnya walau detektor gagal menemukannya.
+# Barulah bila keduanya gagal, tiket dinyatakan tidak cocok.
+
+# Panjang minimal NAME ONLINE untuk boleh dicocokkan secara fuzzy. Nama pendek
+# ("IKE", "KIA") terlalu mudah menyerempet kata biasa — "Oke", "Ika", "jika" semuanya
+# 67% terhadap "IKE" — sehingga fuzzy pada nama sependek itu menghasilkan kelolosan
+# maupun kegagalan yang sama-sama tidak bisa dipertanggungjawabkan.
+FUZZY_MIN_LEN = 5
+
+
+def _kata_transkrip(text: str) -> set:
+    return {w for w in re.findall(r"[A-Za-z'\u2019]{3,}", str(text or ""))}
+
+
+def _nama_asli_cocok(kandidat: str, nama_karyawan: str) -> bool:
+    """Apakah ``kandidat`` adalah nama ASLI agent (dari kolom nama karyawan roster)?
+
+    Diperiksa dua arah karena nama on-air yang terlarang bisa muncul dalam dua bentuk:
+    sebagai KATA utuh pada nama karyawan ("Zidan" pada "MUHAMMAD ZIDAN REGI PERMANA"),
+    atau sebagai POTONGAN di dalam salah satu katanya ("Erina" pada "LULU SABERINA").
+    Keduanya sama-sama nama asli, dan aturannya melarang keduanya.
+    """
+    k = str(kandidat or "").strip().casefold()
+    if len(k) < 3:
+        return False
+    for kata in str(nama_karyawan or "").split():
+        w = kata.strip().casefold()
+        if not w:
+            continue
+        if k == w or (len(k) >= 4 and k in w) or name_similarity(k, w) >= NAME_MATCH_MIN:
+            return True
+    return False
+
+
+def agent_name_verdict(pdf_texts: dict, name_online: str, roster_names=(),
+                       nama_karyawan: str = "") -> dict:
+    """Apakah agent menyebut nama on-air-nya? ``{"match", "detected", "score", "reason"}``.
+
+    ``match`` bernilai ``None`` bila tidak bisa dinilai — NAME ONLINE kosong (agent tidak
+    ada di roster) atau tidak ada transkrip. Pemanggil TIDAK boleh menjatuhkan apa pun
+    pada keadaan itu: ketiadaan data roster bukan kesalahan agent.
+    """
+    no = str(name_online or "").strip()
+    if not no or not pdf_texts:
+        return {"match": None, "detected": [], "score": 0.0,
+                "reason": "NAME ONLINE tidak diketahui; nama agent tidak dinilai."}
+
+    gabung = "\n".join(pdf_texts.values())
+    terdeteksi = detect_agent_names(gabung)
+    skor = max((name_similarity(no, n) for n in terdeteksi), default=0.0)
+    if skor >= NAME_MATCH_MIN:
+        return {"match": True, "detected": terdeteksi, "score": skor,
+                "reason": f"Agent memperkenalkan diri sebagai \"{terdeteksi[0]}\", "
+                          f"sesuai NAME ONLINE \"{no}\"."}
+
+    # Kesempatan kedua: NAME ONLINE muncul sebagai kata di transkrip.
+    kata = _kata_transkrip(gabung)
+    if any(w.casefold() == no.casefold() for w in kata):
+        return {"match": True, "detected": terdeteksi, "score": 100.0,
+                "reason": f"Nama \"{no}\" disebut di transkrip sesuai NAME ONLINE."}
+    if len(no) >= FUZZY_MIN_LEN:
+        best = max(((name_similarity(no, w), w) for w in kata), default=(0.0, ""))
+        if best[0] >= NAME_MATCH_MIN:
+            return {"match": True, "detected": terdeteksi, "score": best[0],
+                    "reason": f"Nama \"{best[1]}\" di transkrip cocok dengan NAME ONLINE "
+                              f"\"{no}\" ({best[0]:.0f}%)."}
+
+    # KALIMATNYA HANYA MENGUTIP NAMA YANG SUNGGUHAN. ``detect_agent_names`` masih ikut
+    # menangkap kata biasa yang kebetulan berdiri sebelum jangkar — pada seed 7 September
+    # ia menghasilkan "mematikan", "notifikasi", "nyalain", "bertugas", "dari". Menuliskan
+    # itu sebagai "agent memperkenalkan diri sebagai 'mematikan'" adalah tuduhan yang
+    # salah sekaligus memalukan, dan QC yang membacanya akan berhenti mempercayai seluruh
+    # laporan. Sebuah nama baru boleh dikutip bila ia PERSIS nama on-air seseorang di
+    # roster — syarat yang sama dipakai penyaring pemilik panggilan untuk memutuskan
+    # sebuah panggilan milik agent lain.
+    # NAMA ASLI DILARANG (aturan bisnis 7 September 2026): perkenalan agent WAJIB
+    # memakai nama on-air. Agent yang menyebut nama aslinya melanggar, dan itu
+    # pelanggaran yang berbeda sifatnya dari sekadar "nama tidak cocok" — ia perbuatan
+    # agent, bukan ketidakrapian data roster, jadi kalimatnya harus menyebutkannya.
+    asli = [n for n in terdeteksi if _nama_asli_cocok(n, nama_karyawan)]
+    if asli:
+        return {"match": False, "detected": terdeteksi, "score": skor,
+                "reason": f"Agent memperkenalkan diri dengan NAMA ASLI \"{asli[0]}\"; "
+                          f"perkenalan wajib memakai nama on-air \"{no}\" sesuai "
+                          f"database sales.",
+                "point_of_improvement": f"Gunakan nama on-air \"{no}\" saat "
+                                         f"memperkenalkan diri, bukan nama asli."}
+
+    kenal = {str(n).strip().casefold() for n in (roster_names or ()) if str(n or "").strip()}
+    nyata = [n for n in terdeteksi if n.strip().casefold() in kenal]
+    if nyata:
+        return {"match": False, "detected": terdeteksi, "score": skor,
+                "reason": f"Agent memperkenalkan diri sebagai \"{nyata[0]}\" — nama on-air "
+                          f"agent LAIN di roster, bukan NAME ONLINE \"{no}\" milik agent "
+                          f"yang ditugaskan pada tiket ini.",
+                "point_of_improvement": f"Gunakan nama on-air sendiri, yaitu \"{no}\", "
+                                         f"bukan nama on-air agent lain."}
+    return {"match": False, "detected": terdeteksi, "score": skor,
+            "reason": f"NAME ONLINE \"{no}\" tidak ditemukan di transkrip; nama yang "
+                      f"diperkenalkan agent tidak sesuai database sales.",
+            "point_of_improvement": f"Sebutkan nama on-air \"{no}\" dengan jelas saat "
+                                     f"membuka percakapan."}
+
+
+# Item scorecard yang mewajibkan agent menyebut nama agent.
+AGENT_NAME_ITEM = "SC_CL_2"
+
+
+def apply_agent_name_verdict(evaluation: dict, verdict: dict) -> dict:
+    """Turunkan ``SC_CL_2`` bila nama yang disebut agent tidak sesuai NAME ONLINE.
+
+    Aturan bisnis 7 September 2026, dikonfirmasi Bank Mega: perkenalan agent WAJIB
+    memakai nama on-air. Menyebut nama asli, nama on-air orang lain, atau tidak
+    menyebutkan nama yang terdaftar sama-sama menggagalkan item ini.
+
+    Ditegakkan di KODE, bukan lewat prompt, karena LLM tidak pernah melihat roster —
+    NAME ONLINE hanya ada di database sales, dan meminta model menghafalnya berarti
+    menyerahkan vonis pada tebakan.
+
+    HANYA MENURUNKAN. ``verdict["match"] is True`` tidak pernah menaikkan status: LLM
+    bisa saja menjatuhkan SC_CL_2 karena sebab lain (mis. nama disebut tetapi bukan di
+    segmen pembuka), dan itu penilaian yang tidak boleh ditimpa dari sini.
+    ``match is None`` (agent tidak ada di roster) juga tidak mengubah apa pun —
+    ketiadaan data roster bukan kesalahan agent.
+
+    ``point_of_improvement`` (14 September 2026) juga ditulis ulang di sini, sejalan
+    dengan item lain yang gagal lewat kode (bukan lewat LLM) — tanpa ini kolom Point
+    of Improvement di dashboard akan kosong padahal item-nya BELUM_SESUAI, karena
+    field itu murni hasil generate LLM dan override kode ini tidak pernah lewat LLM.
+
+    Cakupannya SELURUH rekaman yang dinilai, sesuai aturan KB untuk kategori Greeting:
+    "terpenuhi di panggilan MANA PUN (cukup SATU kali) -> SESUAI".
+    """
+    if not evaluation or (verdict or {}).get("match") is not False:
+        return evaluation
+    rows = evaluation.get("scorecard_result")
+    if not isinstance(rows, list):
+        return evaluation
+    out, ubah = [], False
+    for row in rows:
+        r = row if isinstance(row, dict) else {}
+        if r.get("item_code") != AGENT_NAME_ITEM or r.get("status") == "BELUM_SESUAI":
+            out.append(row)
+            continue
+        out.append({**r, "status": "BELUM_SESUAI", "item_score": 0,
+                    "reason": verdict.get("reason") or
+                              "Nama yang disebut agent tidak sesuai NAME ONLINE.",
+                    "point_of_improvement": verdict.get("point_of_improvement") or
+                              "Sebutkan nama on-air yang benar sesuai database sales."})
+        ubah = True
+    return {**evaluation, "scorecard_result": out} if ubah else evaluation

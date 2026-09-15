@@ -645,6 +645,7 @@ def _error_code_rows(result_json, appeals, doc_overdue: bool = False,
         missing=bool(doc_overdue),
         missing_labels=doc_requirement_labels(result_json) if doc_overdue else (),
         wrong_type=wrong_document_types(documents),
+        mismatch=mismatched_document_types(documents),
     )
     return rows + extra if extra else rows
 
@@ -670,6 +671,53 @@ def wrong_document_types(documents) -> list:
         if hit:
             out.append(hit)
     return out
+
+
+def _document_verification_failed(doc_type, ocr_json) -> bool:
+    """Alias impor-malas ``compliance.documents.document_verification_failed``
+    (alasan impor di dalam fungsi sama dengan ``_wrong_document_type``)."""
+    from compliance.documents import document_verification_failed
+
+    return document_verification_failed(doc_type, ocr_json)
+
+
+def mismatched_document_types(documents) -> list:
+    """``[{"label", "fields"}, ...]`` untuk tiap slot dokumen yang jenisnya BENAR
+    tetapi isinya tidak cocok dengan acuan bank (3 September 2026).
+
+    ``documents`` = ``[(doc_type, ocr_json), ...]``. Dipakai
+    ``document_error_code_rows`` untuk menerbitkan C03 dan — lewat
+    ``_unproven_doc_types`` di bawah — untuk mencoret dokumen itu dari daftar
+    "sudah diunggah"."""
+    from compliance.documents import (
+        DOCUMENT_TYPES,
+        document_verification_mismatches,
+    )
+
+    out = []
+    for doc_type, ocr_json in documents or []:
+        rows = document_verification_mismatches(doc_type, ocr_json)
+        if not rows:
+            continue
+        out.append({
+            "label": DOCUMENT_TYPES.get(doc_type, {}).get("label", str(doc_type).upper()),
+            "fields": [r["field"] for r in rows if r.get("field")],
+        })
+    return out
+
+
+def _unproven_doc_types(docs) -> set:
+    """Jenis dokumen yang TIDAK boleh dihitung sebagai terunggah untuk satu tiket:
+    yang jenisnya keliru (sejak 14 Agustus 2026) DAN yang isinya tidak cocok dengan
+    acuan bank (sejak 3 September 2026). ``docs`` = ``[(doc_type, ocr_json), ...]``.
+
+    Satu definisi dipakai ``_missing_docs_map`` maupun ``document_status_map``;
+    sebelumnya keduanya menyalin logikanya sendiri-sendiri."""
+    return {
+        doc_type for doc_type, ocr_json in docs or []
+        if _wrong_document_type(doc_type, ocr_json)
+        or _document_verification_failed(doc_type, ocr_json)
+    }
 
 
 def doc_requirement_labels(result_json) -> list:
@@ -1050,9 +1098,9 @@ def document_status_map(db, results) -> dict:
         return {}
     types_by_rid = crud.document_types_by_result(db, ids)
     for rid, docs in crud.document_ocr_by_result(db, ids).items():
-        wrong = {dt for dt, ocr in docs if _wrong_document_type(dt, ocr)}
-        if wrong:
-            types_by_rid[rid] = set(types_by_rid.get(rid, set())) - wrong
+        unproven = _unproven_doc_types(docs)
+        if unproven:
+            types_by_rid[rid] = set(types_by_rid.get(rid, set())) - unproven
     submits = _submit_time_map(db, results)
     now = datetime.now()
     return {
@@ -1084,19 +1132,20 @@ def _missing_docs_map(db, results, eval_by_id: dict | None = None) -> dict:
     memenuhi seperti sebelumnya; menghukum tiket karena antrean OCR belum jalan
     bukan penilaian atas pekerjaan agent.
     """
-    from compliance.documents import card_holder_bands_apply, card_holder_doc_types
+    from compliance.documents import (
+        card_holder_bands_apply,
+        card_holder_doc_types,
+        doc_requirements_waived,
+    )
     from compliance.reference_data import get_credit_limit, npwp_required_by_limit
     ids = [str(r.id) for r in results]
     if not ids:
         return {}
     types_by_rid = crud.document_types_by_result(db, ids)
     for rid, docs in crud.document_ocr_by_result(db, ids).items():
-        wrong = {
-            doc_type for doc_type, ocr_json in docs
-            if _wrong_document_type(doc_type, ocr_json)
-        }
-        if wrong:
-            types_by_rid[rid] = set(types_by_rid.get(rid, set())) - wrong
+        unproven = _unproven_doc_types(docs)
+        if unproven:
+            types_by_rid[rid] = set(types_by_rid.get(rid, set())) - unproven
     cid_by_rid = {}
     for r in results:
         sf = r.source_files or []
@@ -1121,6 +1170,9 @@ def _missing_docs_map(db, results, eval_by_id: dict | None = None) -> dict:
         cid = cid_by_rid.get(rid)
         uploaded = types_by_rid.get(rid, set())
         f = flags.get(cid or "", {})
+        if doc_requirements_waived(_normalized_json(eval_by_id.get(rid))):
+            out[rid] = False
+            continue
         needs = any(f.get(k) for k in ("kantor", "rumah", "npwp", "nik"))
         if not needs and cid:
             needs = npwp_required_by_limit(get_credit_limit(cid, db))
@@ -3233,6 +3285,7 @@ def compute_stats_snapshot(db, customer_ids=None, roster_uids=None) -> dict:
             "area_manager": meta["area_manager"],
             "campaign": top_campaign,
             "submissions": acc["submissions"],
+            "approve": acc["approve"],
             "pending": acc["pending"],
             "errors": acc["errors"],
             "error_rate": _rate(acc["errors"], acc["submissions"]),
@@ -3354,6 +3407,7 @@ def compute_stats_snapshot(db, customer_ids=None, roster_uids=None) -> dict:
                 "area_manager": meta["area_manager"],
                 "campaign": c,
                 "submissions": cacc["submissions"],
+                "approve": cacc["approve"],
                 "pending": cacc["pending"],
                 "errors": cacc["errors"],
                 "error_rate": _rate(cacc["errors"], cacc["submissions"]),
