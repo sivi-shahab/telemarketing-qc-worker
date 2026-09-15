@@ -1,0 +1,1232 @@
+{
+	"source": "Not Eligible MUS (Health Declaration & Tidak Tampil Xsell).xlsx",
+	"periode": "Feb 25 .. Juli 2026",
+	"count": 175,
+	"entries": [
+		{
+			"ticket_id": "010118sI0M",
+			"campaign": "CashLine NTB",
+			"reason": "Sakit kanker (masih dalam perawatan atau pengobatan)",
+			"kategori": "SAKIT",
+			"periode": "Okt 25"
+		},
+		{
+			"ticket_id": "010129R3CN",
+			"campaign": "CashLine NTB",
+			"reason": "Mengandung  > 7 bulan",
+			"kategori": "HAMIL",
+			"periode": "Nov 25"
+		},
+		{
+			"ticket_id": "010142kVYX",
+			"campaign": "CashLine NTB",
+			"reason": "Sakit diabetes ( masih dalam pengobatan )",
+			"kategori": "SAKIT",
+			"periode": "Sep 25"
+		},
+		{
+			"ticket_id": "010200wakp",
+			"campaign": "CashLine NTB",
+			"reason": "Mengandung >7 bulan",
+			"kategori": "HAMIL",
+			"periode": "Nov 25"
+		},
+		{
+			"ticket_id": "010235kE0h",
+			"campaign": "CashLine NTB",
+			"reason": "Sakit (Perawatan dokter)",
+			"kategori": "SAKIT",
+			"periode": "Des 25"
+		},
+		{
+			"ticket_id": "010400n0Jq",
+			"campaign": "CashLine NTB",
+			"reason": "CH memiliki penyakit Jantung",
+			"kategori": "SAKIT",
+			"periode": "Juli 2026"
+		},
+		{
+			"ticket_id": "010403tYfg",
+			"campaign": "CashLine NTB",
+			"reason": "Perawatan dari dokter (baru keluar dari RS) dan konsumsi obat vertigo",
+			"kategori": "SAKIT",
+			"periode": "April 2026"
+		},
+		{
+			"ticket_id": "010537hExv",
+			"campaign": "CashLine NTB",
+			"reason": "Mengandung > 9 bulan",
+			"kategori": "HAMIL",
+			"periode": "Des 25"
+		},
+		{
+			"ticket_id": "0105459IME",
+			"campaign": "CashLine NTB",
+			"reason": "Ch terdiagnosa penyakit kritis: idio patik trombosito penia / kelainan darah",
+			"kategori": "SAKIT",
+			"periode": "Juli 2026"
+		},
+		{
+			"ticket_id": "010832y0ei",
+			"campaign": "CashLine NTB",
+			"reason": "Sakit (Perawatan dokter karena GERD)",
+			"kategori": "SAKIT",
+			"periode": "Des 25"
+		},
+		{
+			"ticket_id": "010855EN7x",
+			"campaign": "Personal Loan",
+			"reason": "Xcell MUS tidak muncul",
+			"kategori": "XSELL",
+			"periode": "Okt 25"
+		},
+		{
+			"ticket_id": "010933Wxqt",
+			"campaign": "Personal Loan",
+			"reason": "Mengandung >7 bulan",
+			"kategori": "HAMIL",
+			"periode": "Aug 25"
+		},
+		{
+			"ticket_id": "010954ylgP",
+			"campaign": "CashLine NTB",
+			"reason": "Perawatan dari dokter dan konsumsi obat untuk penyakit hipertensi",
+			"kategori": "SAKIT",
+			"periode": "Juli 2026"
+		},
+		{
+			"ticket_id": "011009Or3p",
+			"campaign": "CashLine NTB",
+			"reason": "PERAWATAN TUKAK LAMBUNG",
+			"kategori": "SAKIT",
+			"periode": "May 2026"
+		},
+		{
+			"ticket_id": "011019A3wr",
+			"campaign": "CashLine NTB",
+			"reason": "Sakit ( Hipertensi )",
+			"kategori": "SAKIT",
+			"periode": "Aug 25"
+		},
+		{
+			"ticket_id": "011200ZFdj",
+			"campaign": "CashLine NTB",
+			"reason": "Sakit (Auto imun)",
+			"kategori": "SAKIT",
+			"periode": "Des 25"
+		},
+		{
+			"ticket_id": "020112m5v7",
+			"campaign": "CashLine NTB",
+			"reason": "Sakit (gula ginjal)",
+			"kategori": "SAKIT",
+			"periode": "Jan 2026"
+		},
+		{
+			"ticket_id": "020435E8S3",
+			"campaign": "CashLine NTB",
+			"reason": "Sakit ( Tiroid )",
+			"kategori": "SAKIT",
+			"periode": "Juni 25"
+		},
+		{
+			"ticket_id": "020437bVeY",
+			"campaign": "CashLine NTB",
+			"reason": "Perawatan dari dokter untuk Tumor Payudara",
+			"kategori": "SAKIT",
+			"periode": "Juni 2026"
+		},
+		{
+			"ticket_id": "020748r2px",
+			"campaign": "CashLine NTB",
+			"reason": "sakit hipertensi masih kontrol dan konsumsi obat",
+			"kategori": "SAKIT",
+			"periode": "Juni 2026"
+		},
+		{
+			"ticket_id": "020826I7mw",
+			"campaign": "CashLine NTB",
+			"reason": "Perawatan dari dokter untuk penyakit darah tinggi dan konsumsi obat rutin",
+			"kategori": "SAKIT",
+			"periode": "May 2026"
+		},
+		{
+			"ticket_id": "020903EvNT",
+			"campaign": "CashLine NTB",
+			"reason": "Sakit (dalam perawatan dari dokter pasca operasi Jantung Coroner)",
+			"kategori": "SAKIT",
+			"periode": "Mar 2026"
+		},
+		{
+			"ticket_id": "0211243XTw",
+			"campaign": "CashLine NTB",
+			"reason": "Sakit (masih dalam pengobatan rutin rawat jalan cuci darah)",
+			"kategori": "SAKIT",
+			"periode": "Okt 25"
+		},
+		{
+			"ticket_id": "021208DqzZ",
+			"campaign": "CashLine NTB",
+			"reason": "Sakit (dalam perawatan dari dokter karena penyakit GERD)",
+			"kategori": "SAKIT",
+			"periode": "Mar 2026"
+		},
+		{
+			"ticket_id": "021214jvuV",
+			"campaign": "CashLine NTB",
+			"reason": "Sakit (Diabetes dan konsumsi obat rutin)",
+			"kategori": "SAKIT",
+			"periode": "Des 25"
+		},
+		{
+			"ticket_id": "030456IfRj",
+			"campaign": "CashLine NTB",
+			"reason": "Hamil > 7 bulan",
+			"kategori": "HAMIL",
+			"periode": "Des 25"
+		},
+		{
+			"ticket_id": "030509Suol",
+			"campaign": "CashLine NTB",
+			"reason": "Mengandung >7 bulan",
+			"kategori": "HAMIL",
+			"periode": "Juni 25"
+		},
+		{
+			"ticket_id": "030529VJPo",
+			"campaign": "CashLine NTB",
+			"reason": "Sakit (Perawatan dokter karena Diabetes)",
+			"kategori": "SAKIT",
+			"periode": "Des 25"
+		},
+		{
+			"ticket_id": "030808fLO1",
+			"campaign": "CashLine NTB",
+			"reason": "Riwayat sakit jantung dan ginjal, sedang dalam perawatan rutin bulanan",
+			"kategori": "SAKIT",
+			"periode": "Juli 2026"
+		},
+		{
+			"ticket_id": "031149LSFI",
+			"campaign": "CashLine NTB",
+			"reason": "CH memiliki penyakit Diabetes",
+			"kategori": "SAKIT",
+			"periode": "Juli 2026"
+		},
+		{
+			"ticket_id": "031229la5A",
+			"campaign": "CashLine NTB",
+			"reason": "Mengandung  > 7 bulan",
+			"kategori": "HAMIL",
+			"periode": "Nov 25"
+		},
+		{
+			"ticket_id": "040420kewt",
+			"campaign": "Personal Loan",
+			"reason": "Xcell MUS tidak muncul",
+			"kategori": "XSELL",
+			"periode": "Sep 25"
+		},
+		{
+			"ticket_id": "0408596yIF",
+			"campaign": "CashLine NTB",
+			"reason": "Sakit Hipertensi ( masih dalam perawatan atau pengobatan )",
+			"kategori": "SAKIT",
+			"periode": "Okt 25"
+		},
+		{
+			"ticket_id": "041009gcuT",
+			"campaign": "Cashline NTB",
+			"reason": "Mengandung >7 bulan",
+			"kategori": "HAMIL",
+			"periode": "Mar 25"
+		},
+		{
+			"ticket_id": "041036gQrf",
+			"campaign": "CashLine NTB",
+			"reason": "sedang perawatan dokter dan akan melakukan tindakan operasi gigi",
+			"kategori": "SAKIT",
+			"periode": "May 2026"
+		},
+		{
+			"ticket_id": "0502219zKk",
+			"campaign": "CashLine NTB",
+			"reason": "Ch memiliki penyakit jantung",
+			"kategori": "SAKIT",
+			"periode": "Juni 2026"
+		},
+		{
+			"ticket_id": "050226PUe3",
+			"campaign": "CashLine NTB",
+			"reason": "Sakit (Hipertensi)",
+			"kategori": "SAKIT",
+			"periode": "Mar 2026"
+		},
+		{
+			"ticket_id": "0504231Pa3",
+			"campaign": "CashLine NTB",
+			"reason": "Hamil > 7 bulan",
+			"kategori": "HAMIL",
+			"periode": "Mar 2026"
+		},
+		{
+			"ticket_id": "050800RBhY",
+			"campaign": "Personal Loan",
+			"reason": "Ch hipertensi",
+			"kategori": "SAKIT",
+			"periode": "Juni 2026"
+		},
+		{
+			"ticket_id": "051121Evhf",
+			"campaign": "CashLine NTB",
+			"reason": "Sakit (Perawatan tendon)",
+			"kategori": "SAKIT",
+			"periode": "Des 25"
+		},
+		{
+			"ticket_id": "051158Utow",
+			"campaign": "CashLine NTB",
+			"reason": "Ch memiliki penyakit jantung",
+			"kategori": "SAKIT",
+			"periode": "Juni 2026"
+		},
+		{
+			"ticket_id": "060238XH4r",
+			"campaign": "CashLine NTB",
+			"reason": "Ch perwatan cancer",
+			"kategori": "SAKIT",
+			"periode": "Juli 2026"
+		},
+		{
+			"ticket_id": "060309zPn4",
+			"campaign": "CashLine NTB",
+			"reason": "sakit gagal ginjal masih rawat jalan",
+			"kategori": "SAKIT",
+			"periode": "Juni 2026"
+		},
+		{
+			"ticket_id": "060421tQDK",
+			"campaign": "CashLine NTB",
+			"reason": "Sakit (Jantung Coroner)",
+			"kategori": "SAKIT",
+			"periode": "Jan 2026"
+		},
+		{
+			"ticket_id": "0604243THe",
+			"campaign": "CashLine NTB",
+			"reason": "Hamil > 7 bulan",
+			"kategori": "HAMIL",
+			"periode": "Jan 2026"
+		},
+		{
+			"ticket_id": "060455498N",
+			"campaign": "CashLine NTB",
+			"reason": "Sakit ( Diabetes ) dalam perawatan dokter",
+			"kategori": "SAKIT",
+			"periode": "Aug 25"
+		},
+		{
+			"ticket_id": "060517Ls5x",
+			"campaign": "CashLine NTB",
+			"reason": "Sakit (Perawatan dari dokter / konsumsi obat jantung seumur hidup)",
+			"kategori": "SAKIT",
+			"periode": "Aug 25"
+		},
+		{
+			"ticket_id": "060745ceKW",
+			"campaign": "CashLine NTB",
+			"reason": "Ch memiliki sakit darah tinggi / hipertensi",
+			"kategori": "SAKIT",
+			"periode": "Juni 2026"
+		},
+		{
+			"ticket_id": "060800MEzp",
+			"campaign": "CashLine NTB",
+			"reason": "Sakit (dalam perawatan dokter untuk penyakit ginjal)",
+			"kategori": "SAKIT",
+			"periode": "Nov 25"
+		},
+		{
+			"ticket_id": "061012E8ta",
+			"campaign": "Cashline NTB",
+			"reason": "Mengandung >7 bulan",
+			"kategori": "HAMIL",
+			"periode": "Feb 25"
+		},
+		{
+			"ticket_id": "0610564OWB",
+			"campaign": "CashLine NTB",
+			"reason": "Perawatan penyakit Diabetes",
+			"kategori": "SAKIT",
+			"periode": "April 2026"
+		},
+		{
+			"ticket_id": "061210XdIT",
+			"campaign": "CashLine NTB",
+			"reason": "CH habis operasi patah tulang dan masih dalam perawatan",
+			"kategori": "SAKIT",
+			"periode": "Juli 2026"
+		},
+		{
+			"ticket_id": "0702469zUx",
+			"campaign": "CashLine NTB",
+			"reason": "Sakit ( auto imun )",
+			"kategori": "SAKIT",
+			"periode": "Mei 25"
+		},
+		{
+			"ticket_id": "070248wtCj",
+			"campaign": "CashLine NTB",
+			"reason": "Sakit (dalam perawatan dari dokter karena penyakit Kanker)",
+			"kategori": "SAKIT",
+			"periode": "Mar 2026"
+		},
+		{
+			"ticket_id": "0707269bjS",
+			"campaign": "Personal Loan",
+			"reason": "Tidak Muncul Xsell",
+			"kategori": "XSELL",
+			"periode": "Mar 25"
+		},
+		{
+			"ticket_id": "070805s9qi",
+			"campaign": "Personal Loan",
+			"reason": "Xsell Tidak Eligible",
+			"kategori": "XSELL",
+			"periode": "Mar 25"
+		},
+		{
+			"ticket_id": "070821VQ9q",
+			"campaign": "CashLine NTB",
+			"reason": "Sakit (Perawatan dari dokter karena sakit cedera lutut)",
+			"kategori": "SAKIT",
+			"periode": "Sep 25"
+		},
+		{
+			"ticket_id": "070851vs8J",
+			"campaign": "CashLine NTB",
+			"reason": "Ch perwatan cancer",
+			"kategori": "SAKIT",
+			"periode": "Juli 2026"
+		},
+		{
+			"ticket_id": "070912H0mI",
+			"campaign": "Personal Loan",
+			"reason": "pengobatan batu ginjal",
+			"kategori": "SAKIT",
+			"periode": "May 2026"
+		},
+		{
+			"ticket_id": "070914dGSN",
+			"campaign": "Personal Loan",
+			"reason": "Mengandung >7 bulan",
+			"kategori": "HAMIL",
+			"periode": "Feb 25"
+		},
+		{
+			"ticket_id": "070931ARCh",
+			"campaign": "CashLine NTB",
+			"reason": "Sakit (hipertensi)",
+			"kategori": "SAKIT",
+			"periode": "Okt 25"
+		},
+		{
+			"ticket_id": "070949ONpM",
+			"campaign": "Personal Loan",
+			"reason": "Tidak Muncul Xsell",
+			"kategori": "XSELL",
+			"periode": "Mar 25"
+		},
+		{
+			"ticket_id": "0710125ylt",
+			"campaign": "Personal Loan",
+			"reason": "Tidak Muncul Xsell",
+			"kategori": "XSELL",
+			"periode": "Mar 25"
+		},
+		{
+			"ticket_id": "071028si4R",
+			"campaign": "Personal Loan",
+			"reason": "Xsell Tidak Eligible",
+			"kategori": "XSELL",
+			"periode": "Mar 25"
+		},
+		{
+			"ticket_id": "071040vQiM",
+			"campaign": "Personal Loan",
+			"reason": "Sakit",
+			"kategori": "SAKIT",
+			"periode": "Mar 25"
+		},
+		{
+			"ticket_id": "080745FucY",
+			"campaign": "CashLine NTB",
+			"reason": "Sakit diabetes",
+			"kategori": "SAKIT",
+			"periode": "Juni 2026"
+		},
+		{
+			"ticket_id": "080851SnEW",
+			"campaign": "Personal Loan",
+			"reason": "perawatan penyakit jantung",
+			"kategori": "SAKIT",
+			"periode": "Juli 2026"
+		},
+		{
+			"ticket_id": "081026rlNd",
+			"campaign": "CashLine NTB",
+			"reason": "Sakit (hipertensi)",
+			"kategori": "SAKIT",
+			"periode": "Okt 25"
+		},
+		{
+			"ticket_id": "081102fAgS",
+			"campaign": "Personal Loan",
+			"reason": "Sakit",
+			"kategori": "SAKIT",
+			"periode": "Okt 25"
+		},
+		{
+			"ticket_id": "081121mDEe",
+			"campaign": "CashLine NTB",
+			"reason": "Sakit Diabetes (masih dalam perawatan atau pengobatan)",
+			"kategori": "SAKIT",
+			"periode": "Okt 25"
+		},
+		{
+			"ticket_id": "081156ACHb",
+			"campaign": "CashLine NTB",
+			"reason": "Sakit hipertensi (masih dalam perawatan atau pengobatan)",
+			"kategori": "SAKIT",
+			"periode": "Okt 25"
+		},
+		{
+			"ticket_id": "090139dOnk",
+			"campaign": "Personal Loan",
+			"reason": "Xcell MUS tidak muncul",
+			"kategori": "XSELL",
+			"periode": "Nov 25"
+		},
+		{
+			"ticket_id": "090211c6tS",
+			"campaign": "Personal Loan",
+			"reason": "Sakit (Rawat jalan penyakit jantung)",
+			"kategori": "SAKIT",
+			"periode": "Mar 2026"
+		},
+		{
+			"ticket_id": "090711Xoqx",
+			"campaign": "CashLine NTB",
+			"reason": "Sakit Hipertensi",
+			"kategori": "SAKIT",
+			"periode": "April 2026"
+		},
+		{
+			"ticket_id": "090825nCGz",
+			"campaign": "Cashline NTB",
+			"reason": "Sakit",
+			"kategori": "SAKIT",
+			"periode": "Mar 25"
+		},
+		{
+			"ticket_id": "091056JSC5",
+			"campaign": "Personal Loan",
+			"reason": "Xsell Tidak Eligible",
+			"kategori": "XSELL",
+			"periode": "Juli 25"
+		},
+		{
+			"ticket_id": "100103B4m7",
+			"campaign": "Personal Loan",
+			"reason": "Xsell Tidak Eligible",
+			"kategori": "XSELL",
+			"periode": "Mar 25"
+		},
+		{
+			"ticket_id": "100103WwDV",
+			"campaign": "Personal Loan",
+			"reason": "Xsell Not Eligible (XSell Tidak Muncul)",
+			"kategori": "XSELL",
+			"periode": "Juli 2026"
+		},
+		{
+			"ticket_id": "1001191shF",
+			"campaign": "Personal Loan",
+			"reason": "Xcell MUS tidak muncul",
+			"kategori": "XSELL",
+			"periode": "Sep 25"
+		},
+		{
+			"ticket_id": "1001536kD1",
+			"campaign": "Cashline NTB",
+			"reason": "Mengandung >7 bulan",
+			"kategori": "HAMIL",
+			"periode": "Feb 25"
+		},
+		{
+			"ticket_id": "100204SRvs",
+			"campaign": "CashLine NTB",
+			"reason": "Ch masih kontrol setiap bulan karena diabetes",
+			"kategori": "SAKIT",
+			"periode": "Juli 2026"
+		},
+		{
+			"ticket_id": "1002378VDl",
+			"campaign": "Personal Loan",
+			"reason": "Xsell MUS Tidak Eligible ( sudah aktif )",
+			"kategori": "XSELL",
+			"periode": "Des 25"
+		},
+		{
+			"ticket_id": "100802zLhQ",
+			"campaign": "Personal Loan",
+			"reason": "excll tidak muncul",
+			"kategori": "XSELL",
+			"periode": "Juni 2026"
+		},
+		{
+			"ticket_id": "100807uBKh",
+			"campaign": "Personal Loan",
+			"reason": "Xsell Not Eligible (XSell Tidak Muncul)",
+			"kategori": "XSELL",
+			"periode": "Juni 2026"
+		},
+		{
+			"ticket_id": "100925FmX4",
+			"campaign": "Personal Loan",
+			"reason": "Xcell MUS tidak muncul",
+			"kategori": "XSELL",
+			"periode": "Sep 25"
+		},
+		{
+			"ticket_id": "100930OsV2",
+			"campaign": "Personal Loan",
+			"reason": "Xsell Not Eligible (XSell Tidak Muncul)",
+			"kategori": "XSELL",
+			"periode": "Juni 2026"
+		},
+		{
+			"ticket_id": "100947Jq0s",
+			"campaign": "Personal Loan",
+			"reason": "Tidak Muncul Xsell",
+			"kategori": "XSELL",
+			"periode": "Mar 25"
+		},
+		{
+			"ticket_id": "100950dDbF",
+			"campaign": "Personal Loan",
+			"reason": "Xcell MUS tidak muncul",
+			"kategori": "XSELL",
+			"periode": "Sep 25"
+		},
+		{
+			"ticket_id": "1009544uTE",
+			"campaign": "Personal Loan",
+			"reason": "Xcell MUS tidak muncul",
+			"kategori": "XSELL",
+			"periode": "Sep 25"
+		},
+		{
+			"ticket_id": "100957XQ6N",
+			"campaign": "Cashline NTB",
+			"reason": "Sakit (dalam perawatan karena kecelakaan lalu lintas)",
+			"kategori": "SAKIT",
+			"periode": "Apr 25"
+		},
+		{
+			"ticket_id": "101054DPV9",
+			"campaign": "Personal Loan",
+			"reason": "Xsell Not Eligible (XSell Tidak Muncul)",
+			"kategori": "XSELL",
+			"periode": "Juni 2026"
+		},
+		{
+			"ticket_id": "101105hR4c",
+			"campaign": "Personal Loan",
+			"reason": "Xcell MUS tidak muncul",
+			"kategori": "XSELL",
+			"periode": "Sep 25"
+		},
+		{
+			"ticket_id": "101125XvOe",
+			"campaign": "Personal Loan",
+			"reason": "Xsell Not Eligible (XSell Tidak Muncul)",
+			"kategori": "XSELL",
+			"periode": "Juni 2026"
+		},
+		{
+			"ticket_id": "101215RZge",
+			"campaign": "Personal Loan",
+			"reason": "Xcell MUS tidak muncul",
+			"kategori": "XSELL",
+			"periode": "Sep 25"
+		},
+		{
+			"ticket_id": "101245crsi",
+			"campaign": "Personal Loan",
+			"reason": "Xcell MUS tidak muncul",
+			"kategori": "XSELL",
+			"periode": "Sep 25"
+		},
+		{
+			"ticket_id": "1012488phZ",
+			"campaign": "CashLine NTB",
+			"reason": "Sakit (Perawatan dari dokter karena syaraf kejepit)",
+			"kategori": "SAKIT",
+			"periode": "Sep 25"
+		},
+		{
+			"ticket_id": "110420pruK",
+			"campaign": "Personal Loan",
+			"reason": "Xcell MUS tidak muncul",
+			"kategori": "XSELL",
+			"periode": "Sep 25"
+		},
+		{
+			"ticket_id": "1112588bIO",
+			"campaign": "CashLine NTB",
+			"reason": "Sakit (masih dalam pengobatan)",
+			"kategori": "SAKIT",
+			"periode": "Sep 25"
+		},
+		{
+			"ticket_id": "120324CYhj",
+			"campaign": "Personal Loan",
+			"reason": "sakit ( gagal ginjal )",
+			"kategori": "SAKIT",
+			"periode": "Mar 2026"
+		},
+		{
+			"ticket_id": "120325cHVU",
+			"campaign": "Personal Loan",
+			"reason": "Tidak muncul Xcell",
+			"kategori": "XSELL",
+			"periode": "Aug 25"
+		},
+		{
+			"ticket_id": "120330Ohco",
+			"campaign": "Personal Loan",
+			"reason": "Xcell MUS tidak muncul",
+			"kategori": "XSELL",
+			"periode": "Mar 2026"
+		},
+		{
+			"ticket_id": "120331YyBo",
+			"campaign": "Personal Loan",
+			"reason": "Xcell MUS tidak muncul",
+			"kategori": "XSELL",
+			"periode": "Aug 25"
+		},
+		{
+			"ticket_id": "120345toDY",
+			"campaign": "Personal Loan",
+			"reason": "Sakit (Hipertensi)",
+			"kategori": "SAKIT",
+			"periode": "Mar 2026"
+		},
+		{
+			"ticket_id": "120432ltYe",
+			"campaign": "Personal Loan",
+			"reason": "Tidak muncul Xcell",
+			"kategori": "XSELL",
+			"periode": "Aug 25"
+		},
+		{
+			"ticket_id": "120435FEsc",
+			"campaign": "Personal Loan",
+			"reason": "Sakit Masih dalam perawatan / pengobatan",
+			"kategori": "SAKIT",
+			"periode": "Aug 25"
+		},
+		{
+			"ticket_id": "120707fO5A",
+			"campaign": "CashLine NTB",
+			"reason": "Sakit (Pengobatan Hipertensi)",
+			"kategori": "SAKIT",
+			"periode": "Sep 25"
+		},
+		{
+			"ticket_id": "120850L5hQ",
+			"campaign": "Personal Loan",
+			"reason": "Sakit (perawatan pasca operasi tulang belakang)",
+			"kategori": "SAKIT",
+			"periode": "Jan 2026"
+		},
+		{
+			"ticket_id": "1209284eAB",
+			"campaign": "Personal Loan",
+			"reason": "Sakit karena kecelakaan (masih dalam perawatan / pengobatan)",
+			"kategori": "SAKIT",
+			"periode": "Jan 2026"
+		},
+		{
+			"ticket_id": "1209296MaR",
+			"campaign": "Personal Loan",
+			"reason": "Tidak muncul Xsell",
+			"kategori": "XSELL",
+			"periode": "Aug 25"
+		},
+		{
+			"ticket_id": "120946y1jk",
+			"campaign": "Personal Loan",
+			"reason": "Tidak muncul Xcell",
+			"kategori": "XSELL",
+			"periode": "Aug 25"
+		},
+		{
+			"ticket_id": "121034BQNP",
+			"campaign": "Personal Loan",
+			"reason": "Xcell MUS tidak muncul",
+			"kategori": "XSELL",
+			"periode": "Sep 25"
+		},
+		{
+			"ticket_id": "121105sqUw",
+			"campaign": "Personal Loan",
+			"reason": "Tidak muncul Xcell",
+			"kategori": "XSELL",
+			"periode": "Aug 25"
+		},
+		{
+			"ticket_id": "121112BpAO",
+			"campaign": "Personal Loan",
+			"reason": "Tidak muncul Xcell",
+			"kategori": "XSELL",
+			"periode": "Aug 25"
+		},
+		{
+			"ticket_id": "1211226bfx",
+			"campaign": "Personal Loan",
+			"reason": "Xcell MUS tidak muncul",
+			"kategori": "XSELL",
+			"periode": "Aug 25"
+		},
+		{
+			"ticket_id": "121135Gs6R",
+			"campaign": "Personal Loan",
+			"reason": "Tidak muncul Xcell",
+			"kategori": "XSELL",
+			"periode": "Aug 25"
+		},
+		{
+			"ticket_id": "121147pPiB",
+			"campaign": "Personal Loan",
+			"reason": "Xcell MUS tidak muncul",
+			"kategori": "XSELL",
+			"periode": "Aug 25"
+		},
+		{
+			"ticket_id": "1304570l4R",
+			"campaign": "Personal Loan",
+			"reason": "Xsell Not Eligible (XSell Tidak Muncul)",
+			"kategori": "XSELL",
+			"periode": "Juni 2026"
+		},
+		{
+			"ticket_id": "130512Wv4E",
+			"campaign": "Personal Loan",
+			"reason": "Tidak muncul Xcell",
+			"kategori": "XSELL",
+			"periode": "Nov 25"
+		},
+		{
+			"ticket_id": "130514r78v",
+			"campaign": "CashLine NTB",
+			"reason": "Ch masih perawatan Diabetes",
+			"kategori": "SAKIT",
+			"periode": "Juni 2026"
+		},
+		{
+			"ticket_id": "130541FBAs",
+			"campaign": "CashLine NTB",
+			"reason": "Sakit (batu ginjal)",
+			"kategori": "SAKIT",
+			"periode": "Aug 25"
+		},
+		{
+			"ticket_id": "130918s4Zp",
+			"campaign": "CashLine NTB",
+			"reason": "Sakit (Perawatan setelah operasi pasang ring jantung)",
+			"kategori": "SAKIT",
+			"periode": "Sep 25"
+		},
+		{
+			"ticket_id": "131034WvBg",
+			"campaign": "CashLine NTB",
+			"reason": "Sakit (Perawatan dari dokter karena sehabis operasi dan patah tulang)",
+			"kategori": "SAKIT",
+			"periode": "Aug 25"
+		},
+		{
+			"ticket_id": "1311083ZkJ",
+			"campaign": "CashLine NTB",
+			"reason": "PENYAKIT KELAINAN DARAH",
+			"kategori": "SAKIT",
+			"periode": "May 2026"
+		},
+		{
+			"ticket_id": "131148x0no",
+			"campaign": "Personal Loan",
+			"reason": "Xcell MUS tidak muncul",
+			"kategori": "XSELL",
+			"periode": "Jan 2026"
+		},
+		{
+			"ticket_id": "1312425tbF",
+			"campaign": "CashLine NTB",
+			"reason": "Sakit Diabetes",
+			"kategori": "SAKIT",
+			"periode": "May 2026"
+		},
+		{
+			"ticket_id": "1408438ye3",
+			"campaign": "CashLine NTB",
+			"reason": "Sakit (Rutin konsumsi obat hipertensi)",
+			"kategori": "SAKIT",
+			"periode": "Mar 2026"
+		},
+		{
+			"ticket_id": "140918njQK",
+			"campaign": "Personal Loan",
+			"reason": "Tidak muncul Xcell",
+			"kategori": "XSELL",
+			"periode": "Nov 25"
+		},
+		{
+			"ticket_id": "140942Nfns",
+			"campaign": "CashLine NTB",
+			"reason": "Sakit Diabetes",
+			"kategori": "SAKIT",
+			"periode": "Jan 2026"
+		},
+		{
+			"ticket_id": "141012S0xE",
+			"campaign": "Personal Loan",
+			"reason": "Tidak Muncul Xsell",
+			"kategori": "XSELL",
+			"periode": "Mar 25"
+		},
+		{
+			"ticket_id": "141049fD35",
+			"campaign": "CashLine NTB",
+			"reason": "Sakit (Diabetes dan konsumsi obat rutin)",
+			"kategori": "SAKIT",
+			"periode": "Okt 25"
+		},
+		{
+			"ticket_id": "150129Ix7z",
+			"campaign": "Personal Loan",
+			"reason": "Sakit (dalam perawatan dokter untuk operasi kaki)",
+			"kategori": "SAKIT",
+			"periode": "Nov 25"
+		},
+		{
+			"ticket_id": "150136BpMS",
+			"campaign": "Personal Loan",
+			"reason": "Tidak muncul Xcell",
+			"kategori": "XSELL",
+			"periode": "Nov 25"
+		},
+		{
+			"ticket_id": "150203RqWh",
+			"campaign": "Personal Loan",
+			"reason": "Xcell MUS tidak muncul",
+			"kategori": "XSELL",
+			"periode": "Okt 25"
+		},
+		{
+			"ticket_id": "150337nKIu",
+			"campaign": "Personal Loan",
+			"reason": "Rutin pengobatan untuk penyakit hipertensi",
+			"kategori": "SAKIT",
+			"periode": "Juli 2026"
+		},
+		{
+			"ticket_id": "15050076Zj",
+			"campaign": "Personal Loan",
+			"reason": "XSell Tidak Eligible (XSell MUS tidak muncul)",
+			"kategori": "XSELL",
+			"periode": "Aug 25"
+		},
+		{
+			"ticket_id": "150536hzX6",
+			"campaign": "Personal Loan",
+			"reason": "Xcell MUS tidak muncul",
+			"kategori": "XSELL",
+			"periode": "Aug 25"
+		},
+		{
+			"ticket_id": "150942uGma",
+			"campaign": "Cashline NTB",
+			"reason": "Mengandung >7 bulan",
+			"kategori": "HAMIL",
+			"periode": "Mar 25"
+		},
+		{
+			"ticket_id": "151041OyBv",
+			"campaign": "Personal Loan",
+			"reason": "Xsell Tidak Eligible",
+			"kategori": "XSELL",
+			"periode": "Mar 25"
+		},
+		{
+			"ticket_id": "151128dvZo",
+			"campaign": "CashLine NTB",
+			"reason": "Mengandung > 7 bulan",
+			"kategori": "HAMIL",
+			"periode": "April 2026"
+		},
+		{
+			"ticket_id": "15114617TF",
+			"campaign": "CashLine NTB",
+			"reason": "KONSUMSI OBAT DIABETES",
+			"kategori": "SAKIT",
+			"periode": "May 2026"
+		},
+		{
+			"ticket_id": "151255zv3N",
+			"campaign": "Personal Loan",
+			"reason": "Sakit ( Cancer ) Masih minum obat rutin",
+			"kategori": "SAKIT",
+			"periode": "Jan 2026"
+		},
+		{
+			"ticket_id": "160154NtIv",
+			"campaign": "CashLine NTB",
+			"reason": "mengandung lebih dari 7 bulan",
+			"kategori": "HAMIL",
+			"periode": "Aug 25"
+		},
+		{
+			"ticket_id": "1602571c7n",
+			"campaign": "CashLine NTB",
+			"reason": "Sakit Jantung (dalam perawatan dokter)",
+			"kategori": "SAKIT",
+			"periode": "Okt 25"
+		},
+		{
+			"ticket_id": "160340Yxy7",
+			"campaign": "CashLine NTB",
+			"reason": "Perawatan penyakit Diabetes",
+			"kategori": "SAKIT",
+			"periode": "April 2026"
+		},
+		{
+			"ticket_id": "160814KYmr",
+			"campaign": "CashLine NTB",
+			"reason": "Sakit Stroke ( masih dalam perawatan dari dokter )",
+			"kategori": "SAKIT",
+			"periode": "Mar 2026"
+		},
+		{
+			"ticket_id": "170848qZ1N",
+			"campaign": "Cashline NTB",
+			"reason": "Tidak Muncul Xsell",
+			"kategori": "XSELL",
+			"periode": "Mar 25"
+		},
+		{
+			"ticket_id": "1709302jd7",
+			"campaign": "Personal Loan",
+			"reason": "Tidak Muncul Xsell,Not Eligible Health Declaration",
+			"kategori": "XSELL",
+			"periode": "Apr 25"
+		},
+		{
+			"ticket_id": "170936SDna",
+			"campaign": "Personal Loan",
+			"reason": "Xcell MUS tidak muncul",
+			"kategori": "XSELL",
+			"periode": "Sep 25"
+		},
+		{
+			"ticket_id": "170945xgSH",
+			"campaign": "CashLine NTB",
+			"reason": "Sakit (pengobatan diabetes)",
+			"kategori": "SAKIT",
+			"periode": "Jan 2026"
+		},
+		{
+			"ticket_id": "171047cISf",
+			"campaign": "CashLine NTB",
+			"reason": "Sakit (Perawatan penyakit jantung)",
+			"kategori": "SAKIT",
+			"periode": "Sep 25"
+		},
+		{
+			"ticket_id": "1712347cO9",
+			"campaign": "Personal Loan",
+			"reason": "Sakit (masih dalam pengobatan)",
+			"kategori": "SAKIT",
+			"periode": "Sep 25"
+		},
+		{
+			"ticket_id": "180322ZRUN",
+			"campaign": "Personal Loan",
+			"reason": "Xcell MUS tidak muncul",
+			"kategori": "XSELL",
+			"periode": "Aug 25"
+		},
+		{
+			"ticket_id": "180419acht",
+			"campaign": "Personal Loan",
+			"reason": "Xcell MUS tidak muncul",
+			"kategori": "XSELL",
+			"periode": "Sep 25"
+		},
+		{
+			"ticket_id": "180420FeHL",
+			"campaign": "Personal Loan",
+			"reason": "Sakit hipertensi dan dalam perawatan/pengobatan dari dokter",
+			"kategori": "SAKIT",
+			"periode": "Aug 25"
+		},
+		{
+			"ticket_id": "1809301x4h",
+			"campaign": "Personal Loan",
+			"reason": "Xsell Tidak Eligible",
+			"kategori": "XSELL",
+			"periode": "Juni 25"
+		},
+		{
+			"ticket_id": "1810527BJf",
+			"campaign": "CashLine NTB",
+			"reason": "Mengandung >7 bulan",
+			"kategori": "HAMIL",
+			"periode": "Okt 25"
+		},
+		{
+			"ticket_id": "1901428fE3",
+			"campaign": "CashLine NTB",
+			"reason": "Sakit (dalam perawatan karena kecelakaan lalu lintas)",
+			"kategori": "SAKIT",
+			"periode": "Mei 25"
+		},
+		{
+			"ticket_id": "1902404TzF",
+			"campaign": "Personal Loan",
+			"reason": "Xcell MUS tidak muncul",
+			"kategori": "XSELL",
+			"periode": "Jan 2026"
+		},
+		{
+			"ticket_id": "190831nlJk",
+			"campaign": "Personal Loan",
+			"reason": "Xsell Tidak Eligible",
+			"kategori": "XSELL",
+			"periode": "Mar 25"
+		},
+		{
+			"ticket_id": "200855oCOY",
+			"campaign": "Personal Loan",
+			"reason": "Xcell MUS tidak muncul",
+			"kategori": "XSELL",
+			"periode": "April 2026"
+		},
+		{
+			"ticket_id": "210537sKJ",
+			"campaign": "Personal Loan",
+			"reason": "Tidak muncul Xcell",
+			"kategori": "XSELL",
+			"periode": "Aug 25"
+		},
+		{
+			"ticket_id": "2111304XLM",
+			"campaign": "Personal Loan",
+			"reason": "Xsell Tidak Eligible",
+			"kategori": "XSELL",
+			"periode": "Mar 25"
+		},
+		{
+			"ticket_id": "211240Hium",
+			"campaign": "Personal Loan",
+			"reason": "Xcell MUS tidak muncul",
+			"kategori": "XSELL",
+			"periode": "Mar 2026"
+		},
+		{
+			"ticket_id": "220112MJSN",
+			"campaign": "Personal Loan",
+			"reason": "Sakit (masih dalam pengobatan)",
+			"kategori": "SAKIT",
+			"periode": "Sep 25"
+		},
+		{
+			"ticket_id": "220250rNuU",
+			"campaign": "Personal Loan",
+			"reason": "Tidak muncul Xsell",
+			"kategori": "XSELL",
+			"periode": "Aug 25"
+		},
+		{
+			"ticket_id": "221257a4iP",
+			"campaign": "CashLine NTB",
+			"reason": "sedang perawatan dokter",
+			"kategori": "SAKIT",
+			"periode": "May 2026"
+		},
+		{
+			"ticket_id": "23091290Af",
+			"campaign": "CashLine NTB",
+			"reason": "Sakit cancer payudara",
+			"kategori": "SAKIT",
+			"periode": "May 2026"
+		},
+		{
+			"ticket_id": "250851cFY0",
+			"campaign": "CashLine NTB",
+			"reason": "Sakit Diabetes (masih dalam perawatan atau pengobatan)",
+			"kategori": "SAKIT",
+			"periode": "Okt 25"
+		},
+		{
+			"ticket_id": "251007gChf",
+			"campaign": "CashLine NTB",
+			"reason": "CH sedang dalam perawatan Kemoterapi untuk Penyakit Kanker",
+			"kategori": "SAKIT",
+			"periode": "Juni 2026"
+		},
+		{
+			"ticket_id": "251113s8r7",
+			"campaign": "CashLine NTB",
+			"reason": "Sakit (diabetes)",
+			"kategori": "SAKIT",
+			"periode": "Mar 2026"
+		},
+		{
+			"ticket_id": "270948HSfe",
+			"campaign": "CashLine NTB",
+			"reason": "Sakit hipertensi (masih dalam perawatan atau pengobatan)",
+			"kategori": "SAKIT",
+			"periode": "Jan 2026"
+		},
+		{
+			"ticket_id": "290354CEIe",
+			"campaign": "Personal Loan",
+			"reason": "Xcell MUS tidak muncul",
+			"kategori": "XSELL",
+			"periode": "Okt 25"
+		},
+		{
+			"ticket_id": "290555o5ak",
+			"campaign": "Personal Loan",
+			"reason": "Xcell MUS tidak muncul",
+			"kategori": "XSELL",
+			"periode": "Aug 25"
+		},
+		{
+			"ticket_id": "2911459YDM",
+			"campaign": "CashLine NTB",
+			"reason": "Hamil >7 bulan",
+			"kategori": "HAMIL",
+			"periode": "Juni 2026"
+		},
+		{
+			"ticket_id": "3001062fZE",
+			"campaign": "CashLine NTB",
+			"reason": "Hamil > 7 bulan",
+			"kategori": "HAMIL",
+			"periode": "Des 25"
+		}
+	]
+}

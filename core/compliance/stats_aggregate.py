@@ -215,39 +215,19 @@ def _rate_of(risk: dict, submissions: int) -> float:
     return _rate(sum(risk.get(k, 0) for k in _RISK_COUNTED), submissions)
 
 
-def _avg(total_risk: int, recordings: int) -> float:
-    """Rata-rata risk base per RECORDING (1 desimal); 0.0 bila nol.
-
-    Pasangan ``_rate`` yang TIDAK mengalikan 100: hasilnya kelipatan, bukan persen.
-    """
-    if not recordings:
-        return 0.0
-    return round(total_risk / recordings, 1)
-
-
-def _avg_of(risk: dict, recordings: int) -> float:
-    """Avg Failure Rate = Total Failure (H+M+L) / **Total Recording**.
-
-    Dipakai **hanya** oleh tab Hierarki Failure Rate (pohon global, versi ter-scope
-    Area Manager / Team Leader, dan Daftar Sales Agent). Di UI berlabel
-    "Avg Failure Rate" dan ditulis sebagai kelipatan, mis. ``2.8x``.
-
-    Menggantikan ``_rate_of`` di sana sejak 2 September 2026: karena satu tiket Not
-    Qualified menyumbang SEMUA risk base-nya (``risk_base_tally``), pembilangnya
-    rutin melebihi penyebutnya dan angkanya melewati 100% — sehingga tidak terbaca
-    sebagai persentase. Yang berubah HANYA penyajiannya (kelipatan, bukan persen);
-    penyebutnya tetap jumlah rekaman yang dinilai.
-
-    Penyebutnya sempat dipindah ke tiket Not Qualified pada 2 September 2026 pagi
-    ("rata-rata pelanggaran per tiket gagal") lalu DIKEMBALIKAN ke Total Recording
-    sore harinya atas permintaan bisnis: kolom penyebutnya ikut berganti nama
-    Submissions -> **Total Recording**, dan angka yang dibaca pengawas harus
-    sepasang dengan kolom itu.
-
-    ``_rate_of`` sengaja DIPERTAHANKAN untuk Overview per campaign dan Overview
-    global, yang tidak ikut berubah.
-    """
-    return _avg(sum(risk.get(k, 0) for k in _RISK_COUNTED), recordings)
+# CATATAN SEJARAH — rasio hierarki sempat memakai KELIPATAN, lalu dikembalikan.
+#
+# Antara 2 dan 15 September 2026 tab Hierarki Failure Rate memakai helper tersendiri:
+# Total Failure dibagi Total Recording TANPA dikali 100, ditulis "2.8x". Alasannya satu
+# tiket Not Qualified menyumbang SELURUH risk base-nya (``risk_base_tally``), sehingga
+# pembilangnya rutin melebihi penyebut dan angka lama melewati 100% — tidak terbaca
+# sebagai persentase.
+#
+# Sejak 15 September 2026 keduanya DIKEMBALIKAN ke ``_rate``/``_rate_of`` (persen),
+# menyamakan server dengan tampilan dashboard yang diselaraskan ke repo monolit.
+# PENYEBUTNYA TIDAK BERUBAH: tetap jumlah rekaman (PDF) yang dinilai. Yang perlu
+# diketahui pembaca berikutnya: angka di atas 100% BUKAN kesalahan hitung — itu sifat
+# ``risk_base_tally``, dan itulah yang dulu membuat penyajian kelipatan dipilih.
 
 
 def _customer_id(source_files) -> "str | None":
@@ -645,6 +625,7 @@ def _error_code_rows(result_json, appeals, doc_overdue: bool = False,
         missing=bool(doc_overdue),
         missing_labels=doc_requirement_labels(result_json) if doc_overdue else (),
         wrong_type=wrong_document_types(documents),
+        mismatch=mismatched_document_types(documents),
     )
     return rows + extra if extra else rows
 
@@ -670,6 +651,53 @@ def wrong_document_types(documents) -> list:
         if hit:
             out.append(hit)
     return out
+
+
+def _document_verification_failed(doc_type, ocr_json) -> bool:
+    """Alias impor-malas ``compliance.documents.document_verification_failed``
+    (alasan impor di dalam fungsi sama dengan ``_wrong_document_type``)."""
+    from compliance.documents import document_verification_failed
+
+    return document_verification_failed(doc_type, ocr_json)
+
+
+def mismatched_document_types(documents) -> list:
+    """``[{"label", "fields"}, ...]`` untuk tiap slot dokumen yang jenisnya BENAR
+    tetapi isinya tidak cocok dengan acuan bank (3 September 2026).
+
+    ``documents`` = ``[(doc_type, ocr_json), ...]``. Dipakai
+    ``document_error_code_rows`` untuk menerbitkan C03 dan — lewat
+    ``_unproven_doc_types`` di bawah — untuk mencoret dokumen itu dari daftar
+    "sudah diunggah"."""
+    from compliance.documents import (
+        DOCUMENT_TYPES,
+        document_verification_mismatches,
+    )
+
+    out = []
+    for doc_type, ocr_json in documents or []:
+        rows = document_verification_mismatches(doc_type, ocr_json)
+        if not rows:
+            continue
+        out.append({
+            "label": DOCUMENT_TYPES.get(doc_type, {}).get("label", str(doc_type).upper()),
+            "fields": [r["field"] for r in rows if r.get("field")],
+        })
+    return out
+
+
+def _unproven_doc_types(docs) -> set:
+    """Jenis dokumen yang TIDAK boleh dihitung sebagai terunggah untuk satu tiket:
+    yang jenisnya keliru (sejak 14 Agustus 2026) DAN yang isinya tidak cocok dengan
+    acuan bank (sejak 3 September 2026). ``docs`` = ``[(doc_type, ocr_json), ...]``.
+
+    Satu definisi dipakai ``_missing_docs_map`` maupun ``document_status_map``;
+    sebelumnya keduanya menyalin logikanya sendiri-sendiri."""
+    return {
+        doc_type for doc_type, ocr_json in docs or []
+        if _wrong_document_type(doc_type, ocr_json)
+        or _document_verification_failed(doc_type, ocr_json)
+    }
 
 
 def doc_requirement_labels(result_json) -> list:
@@ -1050,9 +1078,9 @@ def document_status_map(db, results) -> dict:
         return {}
     types_by_rid = crud.document_types_by_result(db, ids)
     for rid, docs in crud.document_ocr_by_result(db, ids).items():
-        wrong = {dt for dt, ocr in docs if _wrong_document_type(dt, ocr)}
-        if wrong:
-            types_by_rid[rid] = set(types_by_rid.get(rid, set())) - wrong
+        unproven = _unproven_doc_types(docs)
+        if unproven:
+            types_by_rid[rid] = set(types_by_rid.get(rid, set())) - unproven
     submits = _submit_time_map(db, results)
     now = datetime.now()
     return {
@@ -1084,19 +1112,20 @@ def _missing_docs_map(db, results, eval_by_id: dict | None = None) -> dict:
     memenuhi seperti sebelumnya; menghukum tiket karena antrean OCR belum jalan
     bukan penilaian atas pekerjaan agent.
     """
-    from compliance.documents import card_holder_bands_apply, card_holder_doc_types
+    from compliance.documents import (
+        card_holder_bands_apply,
+        card_holder_doc_types,
+        doc_requirements_waived,
+    )
     from compliance.reference_data import get_credit_limit, npwp_required_by_limit
     ids = [str(r.id) for r in results]
     if not ids:
         return {}
     types_by_rid = crud.document_types_by_result(db, ids)
     for rid, docs in crud.document_ocr_by_result(db, ids).items():
-        wrong = {
-            doc_type for doc_type, ocr_json in docs
-            if _wrong_document_type(doc_type, ocr_json)
-        }
-        if wrong:
-            types_by_rid[rid] = set(types_by_rid.get(rid, set())) - wrong
+        unproven = _unproven_doc_types(docs)
+        if unproven:
+            types_by_rid[rid] = set(types_by_rid.get(rid, set())) - unproven
     cid_by_rid = {}
     for r in results:
         sf = r.source_files or []
@@ -1121,6 +1150,9 @@ def _missing_docs_map(db, results, eval_by_id: dict | None = None) -> dict:
         cid = cid_by_rid.get(rid)
         uploaded = types_by_rid.get(rid, set())
         f = flags.get(cid or "", {})
+        if doc_requirements_waived(_normalized_json(eval_by_id.get(rid))):
+            out[rid] = False
+            continue
         needs = any(f.get(k) for k in ("kantor", "rumah", "npwp", "nik"))
         if not needs and cid:
             needs = npwp_required_by_limit(get_credit_limit(cid, db))
@@ -2633,10 +2665,10 @@ def compute_team_agents(db, agent_ids) -> list:
             "transcripts": acc.get("transcripts", acc["submissions"]),
             "errors": acc["errors"],
             "total_risk": sum(acc[k] for k in _RISK_COUNTED),
-            # Avg Failure Rate: Total Failure / Total Recording, ditulis sebagai
+            # Failure Rate: Total Failure / Total Recording, dalam persen —
             # kelipatan. Penyebutnya angka yang sama dengan kolom "Total Recording"
             # di atas — sama dengan pohon global.
-            "error_rate": _avg_of(acc, acc.get("transcripts", acc["submissions"])),
+            "error_rate": _rate_of(acc, acc.get("transcripts", acc["submissions"])),
         })
     # Active agents first (by error rate, then volume), then 0-ticket agents by name.
     out.sort(key=lambda a: (a["submissions"] > 0, a["error_rate"], a["submissions"]), reverse=True)
@@ -2666,7 +2698,7 @@ def compute_scoped_hierarchy(roster) -> dict:
         tl_sub = sum(a["submissions"] for a in members)
         # Kolom "Total Recording" = TRANSKRIP yang dinilai (31 Agustus 2026), sama
         # dengan pohon global; jumlah tiketnya tetap dibawa sebagai ``ticket_count``.
-        # Angka ini SEKALIGUS penyebut Avg Failure Rate — lihat ``_avg``.
+        # Angka ini SEKALIGUS penyebut Failure Rate — lihat ``_rate_of``.
         tl_tx = sum(a.get("transcripts", a["submissions"]) for a in members)
         tl_err = sum(a["errors"] for a in members)
         tl_risk = sum(a.get("total_risk", 0) for a in members)
@@ -2692,7 +2724,7 @@ def compute_scoped_hierarchy(roster) -> dict:
             "ticket_count": tl_sub,
             "errors": tl_err,
             "total_risk": tl_risk,
-            "error_rate": _avg(tl_risk, tl_tx),
+            "error_rate": _rate(tl_risk, tl_tx),
             "agents": agents,
         })
     team_leaders.sort(key=lambda t: (t["error_rate"], t["submissions"]), reverse=True)
@@ -2703,7 +2735,7 @@ def compute_scoped_hierarchy(roster) -> dict:
             "ticket_count": tot_sub,
             "errors": tot_err,
             "total_risk": tot_risk,
-            "error_rate": _avg(tot_risk, tot_tx),
+            "error_rate": _rate(tot_risk, tot_tx),
         },
         "team_leaders": team_leaders,
     }
@@ -3233,6 +3265,7 @@ def compute_stats_snapshot(db, customer_ids=None, roster_uids=None) -> dict:
             "area_manager": meta["area_manager"],
             "campaign": top_campaign,
             "submissions": acc["submissions"],
+            "approve": acc["approve"],
             "pending": acc["pending"],
             "errors": acc["errors"],
             "error_rate": _rate(acc["errors"], acc["submissions"]),
@@ -3354,6 +3387,7 @@ def compute_stats_snapshot(db, customer_ids=None, roster_uids=None) -> dict:
                 "area_manager": meta["area_manager"],
                 "campaign": c,
                 "submissions": cacc["submissions"],
+                "approve": cacc["approve"],
                 "pending": cacc["pending"],
                 "errors": cacc["errors"],
                 "error_rate": _rate(cacc["errors"], cacc["submissions"]),
@@ -3458,11 +3492,11 @@ def _risk_node(v: dict) -> dict:
         # Total Risk deliberately excludes System (O) and New (N) — same rule as
         # the Performa Campaign table.
         "total_risk": v["H"] + v["M"] + v["L"],
-        # Avg Failure Rate = Total Failure ÷ Total Recording, ditulis sebagai
+        # Failure Rate = Total Failure ÷ Total Recording, dalam persen —
         # kelipatan (mis. 2.8x) karena satu tiket menyumbang SEMUA risk base-nya
         # sehingga rasionya rutin melewati 100%. Penyebutnya angka yang sama dengan
         # kolom "Total Recording" tepat di sebelahnya.
-        "error_rate": _avg_of(v, v.get("transcripts", v["submissions"])),
+        "error_rate": _rate_of(v, v.get("transcripts", v["submissions"])),
     }
 
 
@@ -3539,7 +3573,7 @@ def _build_hierarchy(agent_acc, agent_meta, total_eval, total_err, agent_tickets
     all_telesales["submissions"] = _tx
     all_telesales["ticket_count"] = total_eval
     all_telesales["errors"] = total_err
-    all_telesales["error_rate"] = _avg_of(grand, _tx)
+    all_telesales["error_rate"] = _rate_of(grand, _tx)
 
     return {
         "all_telesales": all_telesales,

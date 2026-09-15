@@ -44,7 +44,7 @@ SOURCE_LABELS = {
 #
 # ``desc`` / ``error_type`` / ``error_category`` / ``risk_base`` DISALIN APA ADANYA dari
 # sheet resmi QC — "Error Reason - Telemarketing QC_05082025.xlsx", kolom Details Error /
-# Error Type / Error Categories / Risk Base (lihat ``csv_bank/``). Sengaja tidak
+# Error Type / Error Categories / Risk Base (lihat ``docs/csv_bank/``). Sengaja tidak
 # ditulis ulang dengan kalimat sendiri (permintaan 14 Agustus 2026): sheet itulah
 # kosakata yang dipakai QC sehari-hari, dan wording tandingan membuat dua pihak
 # menyebut kesalahan yang sama dengan nama berbeda. Kalau sheet-nya diperbarui,
@@ -504,6 +504,38 @@ def static_verification_failure_reason(item_code, evaluation: dict) -> "str | No
             f"dengan Ascend ({detail})")
 
 
+def static_verification_improvement_hint(item_code, evaluation: dict) -> "str | None":
+    """``point_of_improvement`` untuk item verifikasi statik yang MISMATCH — dipakai
+    ``_propagate_verification_to_scorecard`` (14 September 2026).
+
+    Item ini turun ke BELUM_SESUAI lewat kode, bukan lewat LLM (lihat
+    ``static_verification_failure_reason`` di atas), jadi field
+    ``point_of_improvement`` yang biasanya ditulis LLM (lihat prompt POINT OF
+    IMPROVEMENT RULE) tidak pernah terisi untuk item ini — kalau dibiarkan, kolom
+    Point of Improvement di dashboard kosong padahal itemnya BELUM_SESUAI. Sama
+    tiga penyebab dengan ``static_verification_failure_reason``, saran disesuaikan
+    per penyebab bukan cuma negasi requirement.
+    """
+    entry = STATIC_VERIFICATION_ITEMS.get(item_code)
+    if not entry or not isinstance(evaluation, dict):
+        return None
+    field, label = entry
+    row = None
+    for v in evaluation.get("card_holder_verification") or []:
+        if (v or {}).get("field") == field:
+            row = v or {}
+            break
+    if not row or row.get("match") != "MISMATCH":
+        return None
+    extracted = str(row.get("extracted_value") or "").strip()
+    if not extracted:
+        return f"Tanyakan {label} nasabah dan catat jawabannya dengan jelas."
+    if _reason_says_inconsistent(row.get("reason")):
+        return (f"Pastikan jawaban {label} nasabah konsisten setiap kali "
+                f"ditanyakan ulang di sepanjang panggilan.")
+    return f"Konfirmasikan ulang {label} nasabah agar sesuai dengan data Ascend."
+
+
 def not_fulfilled_reason(item: dict, evaluation: dict = None,
                          prefer_item_reason: bool = False) -> str:
     """Why a scorecard item is unmet, tagged with its item code, e.g.
@@ -629,6 +661,14 @@ def derive_category_summary(evaluation: dict) -> dict:
     Perbaikan ini murni TAMPILAN: ``ai_score_phase_2`` tidak pernah menghitung item
     ``TIDAK_DINILAI`` (``scorecard_score`` hanya mengurangi bobot item BELUM_SESUAI
     dari ``max_score``), jadi tidak ada skor atau AI Status yang berubah.
+
+    SEJAK 8 September 2026 item MUS hanya ``TIDAK_DINILAI`` ketika tiketnya
+    DIKECUALIKAN dari kewajiban MUS; tanpa pengecualian item-item itu dinilai apa
+    adanya (§4.5 CAMPAIGN_SCORING.md). Untuk hasil LAMA yang terlanjur menulis
+    ``TIDAK_DINILAI`` tanpa pengecualian, ``scorecard_score`` memotongnya penuh
+    sementara ringkasan kategori di sini tetap menampilkannya sebagai TIDAK DINILAI —
+    selisih yang disengaja dan dijelaskan oleh baris "REKAMAN TIDAK VALID" di bawah
+    Hasil. Ia hilang sendiri begitu tiketnya diproses ulang dengan prompt v80.
 
     Categories appear in scorecard order, so a category the LLM forgot to summarise
     (32 occurrences on live data) is no longer missing. Display-only: no score, AI Status
@@ -854,7 +894,8 @@ def _document_row(code: str, reason: str) -> dict:
     }
 
 
-def document_error_code_rows(missing=False, missing_labels=(), wrong_type=()) -> list:
+def document_error_code_rows(missing=False, missing_labels=(), wrong_type=(),
+                             mismatch=()) -> list:
     """Baris Error Code untuk urusan dokumen pendukung. DUA kode, dibedakan oleh
     siapa yang gagal:
 
@@ -874,6 +915,15 @@ def document_error_code_rows(missing=False, missing_labels=(), wrong_type=()) ->
                           tiap item ``{"expected": <label>, "detected": <label>}``.
                           Terbit C03, satu baris per slot yang keliru, karena tiap
                           slot adalah kesalahan unggah tersendiri.
+    ``mismatch``        — dokumen yang jenisnya BENAR tetapi isinya tidak cocok dengan
+                          acuan bank (3 September 2026), tiap item
+                          ``{"label": <label dokumen>, "fields": [<nama field>, ...]}``.
+                          Terbit C03 juga: sama seperti salah jenis, berkas yang
+                          diserahkan nasabah tidak membuktikan apa pun — jadi Error -
+                          Customer, Risk Base O, tidak menaikkan Error Rate agent.
+                          Kewajiban dokumennya sendiri tetap berdiri (dokumen itu
+                          tidak dihitung terunggah), sehingga B09 tetap terbit bila
+                          tenggat H+2 lewat tanpa pengganti yang benar.
 
     Sebuah tiket bisa kena KEDUANYA — slot NPWP diisi KTP (C03), sehingga kewajiban
     NPWP-nya tetap kosong dan tenggat lewat (B09). Itu memang dua fakta yang berbeda
@@ -898,6 +948,16 @@ def document_error_code_rows(missing=False, missing_labels=(), wrong_type=()) ->
             f"Dokumen yang diminta {expected}, "
             + (f"yang diunggah terbaca sebagai {detected}" if detected
                else "yang diunggah bukan dokumen tersebut"),
+        ))
+    for item in mismatch or []:
+        label = str((item or {}).get("label") or "").strip()
+        if not label:
+            continue
+        fields = [str(f).strip() for f in ((item or {}).get("fields") or []) if str(f or "").strip()]
+        rows.append(_document_row(
+            "C03",
+            f"Dokumen {label} yang diunggah tidak cocok dengan data acuan bank"
+            + (f" pada {', '.join(fields)}" if fields else ""),
         ))
     return rows
 
@@ -1038,18 +1098,51 @@ def build_error_code_table(evaluation: dict) -> list:
     """Build the grouped Error Code table rows from an LLM ``evaluation`` object.
 
     Returns a list of dicts, ordered by source group, each shaped as:
-    {sumber, error_code, item_code, details_error, reason, evidence, ticket_id}
+      {sumber, error_code, item_code, details_error, reason, evidence, ticket_id}
 
     - Scorecard            : derived B10/B12/B18 + LLM error_codes (split per SC_CL)
     - Card Holder Verif.   : B17 per mismatched/skipped field
     - Cashline Data Verif. : B02/B03/B05 per mismatched/skipped field
+
+    ``point_of_improvement`` (14 September 2026): coaching saran perbaikan, dipindah
+    ke SINI dari tabel Hasil Scorecard (permintaan user — Agent Error Summary adalah
+    tempat yang lebih tepat untuk feedback ke agent). Untuk baris yang bersumber dari
+    scorecard_result (1, 1b, 1c), nilainya diambil APA ADANYA dari LLM (tetap
+    dihasilkan lewat prompt POINT OF IMPROVEMENT RULE, personal per item — "reason
+    boleh dari LLM"). Untuk baris verifikasi (2, 3) yang turun lewat KODE (LLM tidak
+    pernah menuliskan reason-nya sendiri untuk baris ini), saran dihasilkan
+    deterministik lewat ``static_verification_improvement_hint``/
+    ``CASHLINE_FIELD_LABELS`` — pola yang sama dengan yang tadinya dipakai di
+    scorecard_result sebelum dipindah.
     """
     evaluation = evaluation or {}
+    scorecard_by_code = {
+        (it or {}).get("item_code"): it
+        for it in (evaluation.get("scorecard_result") or [])
+        if (it or {}).get("item_code")
+    }
+    # Dipakai di 1a (LLM copy) DAN 1c (kode) — B16 secara definisi katalog berarti
+    # "verifikasi STATIK BERHASIL, dinamis kurang/tidak sesuai", jadi TIDAK VALID
+    # bila ada field statik yang gagal (di situ B17 sudah menjelaskan kegagalannya).
+    # Dihitung di sini (bukan hanya di 1c) supaya B16 yang ditulis LANGSUNG oleh LLM
+    # sendiri di ``error_codes`` juga tunduk pada syarat yang sama — sebelumnya hanya
+    # cabang derivasi kode (1c) yang menjaga ini, jadi B16 tulisan LLM bisa lolos
+    # berdampingan dengan B17 statik pada tiket yang sama (kontradiktif: baris B16
+    # mengklaim "verifikasi statik berhasil" padahal baris B17 di bawahnya justru
+    # bilang statik gagal). Tiket contoh: 030808fLO1, 14 September 2026.
+    _sc_status = {
+        (it or {}).get("item_code"): ((it or {}).get("status") or "").upper()
+        for it in (evaluation.get("scorecard_result") or [])
+    }
+    _static_failed = any(
+        _sc_status.get(code) == "BELUM_SESUAI"
+        for code in CARD_HOLDER_STATIC_SCORECARD.values()
+    )
     rows = []
     seen = set()  # f"{code}::{item_code}" — prevents the same code+item appearing twice
 
     def add(source, code, item_code, reason, evidence, ticket_id, details=None,
-            extra=None, timestamp="", evidence_quote=""):
+            extra=None, timestamp="", evidence_quote="", point_of_improvement=None):
         key = f"{code}::{item_code or ''}"
         if item_code and key in seen:
             return
@@ -1066,6 +1159,7 @@ def build_error_code_table(evaluation: dict) -> list:
             "item_code": item_code or "",
             "details_error": ERROR_DESC_ID.get(code) or details or "",
             "reason": strip_item_codes(reason),
+            "point_of_improvement": point_of_improvement or None,
             "evidence": evidence or "",
             # Split evidence so the QC "Manual Check" modal can prefill the
             # Timestamp and Evidence-text fields separately (see _evidence_*).
@@ -1087,6 +1181,12 @@ def build_error_code_table(evaluation: dict) -> list:
         # copy unless it explicitly references a scorecard item (SC_CL_*).
         if code in _VERIFICATION_CODES and not item_codes:
             continue
+        # B16 tulisan LLM sendiri tunduk pada syarat yang sama dengan versi derivasi
+        # kode di 1c: TIDAK VALID bila ada field statik yang gagal (lihat komentar
+        # ``_static_failed`` di atas) — kalau tidak, baris ini berkontradiksi dengan
+        # baris B17 statik yang terbit di bagian 2.
+        if code == "B16" and _static_failed:
+            continue
         evidence = trigger.get("evidence") or {}
         ev_text = _evidence_text(evidence)
         ev_ts = _evidence_timestamp(evidence)
@@ -1097,7 +1197,9 @@ def build_error_code_table(evaluation: dict) -> list:
         if item_codes:
             for ic in item_codes:
                 add(SOURCE_SCORECARD, code, ic, reason, ev_text, ticket_id, details,
-                    timestamp=ev_ts, evidence_quote=ev_quote)
+                    timestamp=ev_ts, evidence_quote=ev_quote,
+                    point_of_improvement=(scorecard_by_code.get(ic) or {}).get(
+                        "point_of_improvement"))
         else:
             add(SOURCE_SCORECARD, code, None, reason, ev_text, ticket_id, details,
                 timestamp=ev_ts, evidence_quote=ev_quote)
@@ -1121,6 +1223,7 @@ def build_error_code_table(evaluation: dict) -> list:
             evidence.get("ticket_id") or "",
             timestamp=_evidence_timestamp(evidence),
             evidence_quote=_evidence_quote(evidence),
+            point_of_improvement=item.get("point_of_improvement"),
         )
 
     # --- 1c) Scorecard: B16 diturunkan dari scorecard verifikasi ---------------
@@ -1135,15 +1238,8 @@ def build_error_code_table(evaluation: dict) -> list:
     # Syaratnya persis definisi katalognya: verifikasi dinamis GAGAL sementara TIDAK
     # SATU PUN item statik gagal. ``PENDING`` (zona abu-abu, dokumen pendukung masih
     # ditunggu) dihitung sebagai BELUM gagal — statiknya belum divonis, jadi B17 pun
-    # belum terbit dan B16-lah yang benar.
-    _sc_status = {
-        (it or {}).get("item_code"): ((it or {}).get("status") or "").upper()
-        for it in (evaluation.get("scorecard_result") or [])
-    }
-    _static_failed = any(
-        _sc_status.get(code) == "BELUM_SESUAI"
-        for code in CARD_HOLDER_STATIC_SCORECARD.values()
-    )
+    # belum terbit dan B16-lah yang benar. (``_sc_status``/``_static_failed`` sudah
+    # dihitung di awal fungsi — dipakai bersama dengan guard B16 di bagian 1.)
     if (
         _sc_status.get(CARD_HOLDER_DYNAMIC_SCORECARD) == "BELUM_SESUAI"
         and not _static_failed
@@ -1164,6 +1260,7 @@ def build_error_code_table(evaluation: dict) -> list:
             _dyn_ev.get("ticket_id") or "",
             timestamp=_evidence_timestamp(_dyn_ev),
             evidence_quote=_evidence_quote(_dyn_ev),
+            point_of_improvement=_dyn_item.get("point_of_improvement"),
         )
 
     # --- 2) Card Holder Verification: B17 per field STATIK yang MISMATCH ------
@@ -1201,6 +1298,12 @@ def build_error_code_table(evaluation: dict) -> list:
                 "extracted_value": v.get("extracted_value"),
                 "match": v.get("match"),
             },
+            # Baris ini turun lewat KODE (mismatch verifikasi), bukan lewat LLM,
+            # jadi tidak ada point_of_improvement yang bisa diambil dari mana pun —
+            # dihasilkan deterministik dari field yang sama yang dipakai
+            # ``static_verification_improvement_hint`` pada scorecard_result dulu.
+            point_of_improvement=static_verification_improvement_hint(
+                CARD_HOLDER_STATIC_SCORECARD.get(v.get("field")), evaluation),
         )
 
     # --- 3) Cashline Data Verification: B02/B03/B05 per mismatched/skipped field ---
@@ -1213,6 +1316,20 @@ def build_error_code_table(evaluation: dict) -> list:
         # SKIPPED_NULL fields carry no penalty and are no longer surfaced as errors —
         # only true MISMATCH rows become B02/B03/B05.
         if match != "MISMATCH":
+            continue
+        # KONSISTENSI INTERNAL (14 September 2026) — cermin persis guard yang sama
+        # di ``_propagate_cashline_to_scorecard``: bila verifikasi bilang nilainya
+        # SAMA SEKALI tidak ditemukan (extracted_value kosong) TETAPI item scorecard
+        # pasangannya sendiri SESUAI dengan evidence NYATA, ini kontradiksi internal
+        # (Task D gagal ekstraksi, bukan agent gagal menyebutkan) — jangan terbitkan
+        # baris error untuk field ini sama sekali. Genuine MISMATCH (extracted_value
+        # TERISI tapi beda angka) tetap terbit seperti biasa.
+        _paired_code = CASHLINE_FIELD_SCORECARD.get((v or {}).get("field"))
+        _paired_item = scorecard_by_code.get(_paired_code) or {}
+        if (
+            not str((v or {}).get("extracted_value") or "").strip()
+            and str((_paired_item.get("evidence") or {}).get("quote") or "").strip()
+        ):
             continue
         code = code_for_cashline_field(v, cashline_codes, used)
         # Carry reference/extracted/match so the QC "Manual Check" (banding) modal
@@ -1233,6 +1350,13 @@ def build_error_code_table(evaluation: dict) -> list:
                 "extracted_value": v.get("extracted_value"),
                 "match": v.get("match"),
             },
+            # Sama seperti B17: turun lewat kode, saran deterministik dari label
+            # field (lihat CASHLINE_FIELD_LABELS).
+            point_of_improvement=(
+                f"Konfirmasikan ulang {CASHLINE_FIELD_LABELS[v.get('field')]} "
+                f"kepada nasabah agar sesuai dengan data yang tercatat di sistem."
+                if v.get("field") in CASHLINE_FIELD_LABELS else None
+            ),
         )
 
     # --- 3b) Data-entry check: the TMS value itself vs the product terms ---
@@ -1555,9 +1679,10 @@ def _latest_per_key(appeals: list) -> list:
     Akibat bug tersebut, begitu QC mengajukan penghapusan atas baris hasil ``add``,
     banding ``add``-nya lenyap dari semua penyaring — barisnya hilang dari tabel
     seketika padahal penghapusannya BARU DIAJUKAN (masih "menunggu"), lengkap dengan
-    hilangnya pengurangan skornya. Persis alur yang dianjurkan docstring
-    ``added_appeals_visible``: add ditolak -> baris tetap tampil -> QC mengajukan
-    ``remove`` untuk membersihkannya."""
+    hilangnya pengurangan skornya. Alur itu masih berlaku untuk baris hasil ``add``
+    yang SUDAH DISETUJUI lalu diminta dihapus; yang tidak lagi ada adalah baris hasil
+    add yang DITOLAK — sejak 3 September 2026 ia langsung tidak ditampilkan (lihat
+    ``added_appeals_visible``), jadi tidak perlu dibersihkan dengan ``remove``."""
     latest = {}
     for a in appeals or []:
         latest[(*_appeal_row_key(a), _appeal_kind(a))] = a
@@ -1653,18 +1778,26 @@ def added_appeals_only(appeals: list) -> list:
 
 
 def added_appeals_visible(appeals: list) -> list:
-    """``add`` bandings that should render a row: pending (awaiting review), approved
-    (applied), OR rejected. A rejected add stays visible (shown as ``rejected``)
-    instead of vanishing — the QC keeps a record of the denied proposal and removes it
-    later via a separate deletion request (a ``remove`` banding). It is display-only:
-    the score uses ``added_appeals_only`` (approved), so a rejected add never deducts.
+    """``add`` bandings that should render a row: pending (awaiting review) atau
+    approved (applied).
 
-    Barisnya baru hilang setelah penghapusan itu DISETUJUI; selama penghapusannya
-    masih menunggu, barisnya tetap tampil dengan status banding "menunggu"."""
+    Yang DITOLAK tidak lagi memunculkan baris (3 September 2026). Sebelumnya baris
+    itu tetap tampil berstatus ``rejected`` dan QC harus mengajukan banding
+    ``remove`` terpisah untuk membersihkannya — padahal usulan yang ditolak bukan
+    temuan: barisnya tidak pernah mengurangi skor (skor memakai
+    ``added_appeals_only``, hanya yang approved), jadi ia hanya mengotori tabel
+    dengan error yang tidak berlaku. Jejaknya TIDAK hilang: seluruh banding —
+    termasuk add yang ditolak — tetap terbaca di kolom "Riwayat" halaman Results
+    (``_appeal_summary`` di ``api/routers/stats.py`` mengirim SEMUA banding, bukan
+    hanya yang terbaru per baris).
+
+    Barisnya juga hilang bila ada penghapusan yang DISETUJUI sesudah add terakhirnya;
+    selama penghapusan itu masih menunggu, barisnya tetap tampil dengan status
+    banding "menunggu"."""
     gone = _keys_removed_by_approval(appeals)
     return [
         a for a in _latest_per_key(appeals)
-        if _appeal_kind(a) == "add" and effective_appeal_status(a) in ("pending", "approved", "rejected")
+        if _appeal_kind(a) == "add" and effective_appeal_status(a) in ("pending", "approved")
         and _appeal_row_key(a) not in gone
     ]
 
@@ -1692,7 +1825,7 @@ CARD_HOLDER_DYNAMIC_REQUIRED = 2
 CARD_HOLDER_DYNAMIC_PENALTY = 7.5  # per shortfall from the required 2
 
 # Per-field MISMATCH penalties, mirroring the campaign prompt
-# (campaign_cashline/prompt_cashline_mus_v30.txt:1398-1421). Used ONLY by the QC
+# (docs/campaign/prompt_cashline_mus_v30.txt:1398-1421). Used ONLY by the QC
 # "add error code" flow to deduct the right amount when flipping a currently-MATCH
 # verification field to MISMATCH. The LLM otherwise sets these item_scores itself.
 CASHLINE_FIELD_PENALTY = {
@@ -1737,6 +1870,22 @@ CASHLINE_FIELD_SCORECARD = {
     "nama_pemilik_rekening": "SC_CL_13",          # bobot 2
     "provisi": "SC_CL_8",                         # bobot 4
     "biaya_admin": "SC_CL_11",                    # bobot 5
+}
+
+# Label manusiawi per field, dipakai HANYA untuk menyusun ``point_of_improvement``
+# generik (14 September 2026) saat MISMATCH — lihat pemakaiannya di bawah. Tidak
+# menggantikan ``reason`` (yang tetap diambil dari baris verifikasi apa adanya).
+CASHLINE_FIELD_LABELS = {
+    "nominal_pencairan": "nominal pencairan",
+    "tenor_dalam_bulan": "tenor cicilan",
+    "nominal_cicilan_per_bulan": "nominal cicilan per bulan",
+    "bunga": "bunga",
+    "nama_bank": "nama bank penerima",
+    "penalti_pelunasan_dipercepat": "ketentuan pelunasan dipercepat",
+    "nomor_rekening": "nomor rekening",
+    "nama_pemilik_rekening": "nama pemilik rekening",
+    "provisi": "biaya provisi",
+    "biaya_admin": "biaya admin",
 }
 
 # Card Holder STATIC field -> the scorecard item it forces to BELUM_SESUAI on MISMATCH
@@ -1837,11 +1986,17 @@ def _propagate_verification_to_scorecard(evaluation: dict) -> dict:
             # mismatch Ascend). Dynamic SC_CL_24 tidak punya satu field penyebab —
             # yang gagal adalah aturan minimal 2 parameter terverifikasi.
             reason = static_verification_failure_reason(code, evaluation)
+            hint = static_verification_improvement_hint(code, evaluation)
             if reason is None and code == CARD_HOLDER_DYNAMIC_SCORECARD:
                 reason = (f"Kurang dari {CARD_HOLDER_DYNAMIC_REQUIRED} parameter "
                           f"verifikasi dinamis yang terverifikasi (aturan KB_CL_24)")
+                hint = (f"Verifikasi minimal {CARD_HOLDER_DYNAMIC_REQUIRED} "
+                        f"parameter dinamis (di luar tanggal lahir & nama ibu "
+                        f"kandung) sebelum melanjutkan proses.")
             if reason:
                 updated["reason"] = reason
+            if hint:
+                updated["point_of_improvement"] = hint
             new_items.append(updated)
             changed = True
         else:
@@ -1940,10 +2095,41 @@ def _propagate_cashline_to_scorecard(evaluation: dict) -> dict:
             code = (it or {}).get("item_code")
             if code in force and (it or {}).get("status") != "BELUM_SESUAI":
                 v = force[code]
+                # KONSISTENSI INTERNAL (14 September 2026): bila verifikasi bilang
+                # nilainya SAMA SEKALI tidak ditemukan di transkrip (extracted_value
+                # kosong) TETAPI item scorecard pasangannya SENDIRI sudah SESUAI
+                # dengan evidence NYATA (kutipan tidak kosong) — LLM yang SAMA, pada
+                # evaluasi yang SAMA, mengklaim dua hal yang saling bertentangan:
+                # Task D bilang "tidak disebut", scorecard bilang "disebut, ini
+                # kutipannya". Kegagalan ekstraksi Task D pada kalimat padat berisi
+                # banyak angka sekaligus (lihat DENSE MULTI-VALUE MONOLOGUE RULE di
+                # prompt & parallel_pass._merge_cashline_data) jauh lebih mungkin jadi
+                # penyebab daripada scorecard mengarang bukti bersama timestamp &
+                # kutipan yang presisi. JANGAN jatuhkan item ini dalam kasus itu —
+                # biarkan SESUAI apa adanya, dan JANGAN timpa reason/evidence-nya.
+                # Genuine MISMATCH (extracted_value TERISI tapi angkanya beda) TETAP
+                # dijatuhkan seperti biasa di bawah — itu tangkapan kesalahan input
+                # data yang sah, bukan kegagalan ekstraksi. Tiket contoh: 030808fLO1.
+                extracted_empty = not str((v or {}).get("extracted_value") or "").strip()
+                own_quote = str(((it or {}).get("evidence") or {}).get("quote") or "").strip()
+                if extracted_empty and own_quote:
+                    new_items.append(it)
+                    continue
                 updated = {**it, "status": "BELUM_SESUAI", "item_score": 0}
                 reason = str((v or {}).get("reason") or "").strip()
                 if reason:
                     updated["reason"] = reason
+                # point_of_improvement (14 September 2026): item ini turun lewat kode,
+                # bukan LLM, jadi field itu tidak pernah ikut terisi tanpa ini — lihat
+                # catatan yang sama di static_verification_improvement_hint di atas.
+                # Generik karena reason-nya sendiri sudah berasal dari baris verifikasi
+                # bebas (bukan template tetap seperti sisi statik).
+                label = CASHLINE_FIELD_LABELS.get((v or {}).get("field"))
+                if label:
+                    updated["point_of_improvement"] = (
+                        f"Konfirmasikan ulang {label} kepada nasabah agar sesuai "
+                        f"dengan data yang tercatat di sistem."
+                    )
                 new_items.append(updated)
                 changed = True
             elif code in pending and _cashline_pending_applies(it, pending[code]):
@@ -2288,7 +2474,7 @@ def _format_percent(value) -> str:
     return f"{num:g}".replace(".", ",") + "%"
 
 
-def _static_band_reason(row: dict, rule: dict) -> str:
+def _static_band_reason(row: dict, rule: dict, waived: bool = False) -> str:
     """Kalimat ``reason`` deterministik untuk satu baris verifikasi STATIK, ditulis
     dari angka yang SUDAH dihitung ulang Python.
 
@@ -2326,6 +2512,16 @@ def _static_band_reason(row: dict, rule: dict) -> str:
     if sim >= rule["doc_min"]:
         doc = DOCUMENT_TYPES.get(rule["doc_type"], {}).get(
             "label", str(rule["doc_type"]).upper())
+        if waived:
+            # Kewajiban dokumen tiket ini SUDAH dicabut (lihat
+            # ``documents.doc_requirements_waived``): tidak ada permintaan berkas,
+            # tidak ada tenggat, slot unggahnya tertutup. Menyisakan kalimat "perlu
+            # verifikasi dokumen X" membuat layar menuntut sesuatu yang tidak pernah
+            # bisa dipenuhi — persis kontradiksi yang ditemukan pada tiket 030808fLO1,
+            # yang kolom Match-nya berbunyi MATCH sementara alasannya meminta KK.
+            return (f"{detail}, di bawah ambang {_format_percent(rule['match_min'])}; "
+                    f"verifikasi dokumen {doc} TIDAK diminta karena tiket ini sudah "
+                    f"memiliki pelanggaran non-tolerable lain.")
         return f"{detail}, perlu verifikasi dokumen {doc}."
     return (f"{detail}, di bawah ambang {_format_percent(rule['doc_min'])} "
             f"sehingga mismatch dengan Ascend.")
@@ -2721,8 +2917,37 @@ def apply_static_document_status(evaluation: dict, uploaded_types=(), sla_expire
     from compliance.documents import (
         DOCUMENT_TYPES,
         card_holder_doc_bands,
+        doc_requirements_waived,
         in_document_band,
     )
+
+    # Kewajiban dokumennya sudah dicabut (pelanggaran non-tolerable lain, 3 September
+    # 2026) -> tidak ada yang ditunggu dan tidak ada tenggat yang berjalan, jadi
+    # barisnya dibiarkan apa adanya. Diperiksa di SINI, bukan di pemanggil, supaya
+    # daftar Results, halaman detail, dan seluruh agregasi tidak bisa berbeda pendapat.
+    if doc_requirements_waived(evaluation):
+        # ``match`` SENGAJA tidak disentuh — menurunkannya ke PENDING akan menghidupkan
+        # kembali permintaan dokumen (``documents.card_holder_doc_requirements`` memungut
+        # baris ber-status MISMATCH/PENDING), tenggat H+2, dan B09: tepat tiga hal yang
+        # pembebasan ini tutup. Yang diperbaiki hanya KALIMATNYA, supaya layar tidak
+        # menuntut berkas yang slot unggahnya sudah ditutup.
+        bands = card_holder_doc_bands(evaluation)
+        final, ubah = [], False
+        for it in items:
+            v = it if isinstance(it, dict) else {}
+            rule = bands.get(v.get("field"))
+            if rule is None or not in_document_band(v, rule):
+                final.append(it)
+                continue
+            teks = _static_band_reason(v, rule, waived=True)
+            if teks == v.get("reason"):
+                final.append(it)
+                continue
+            final.append({**v, "reason": teks})
+            ubah = True
+        if not ubah:
+            return evaluation
+        return {**evaluation, "card_holder_verification": final}
 
     bands = card_holder_doc_bands(evaluation)
     have = {str(t).strip() for t in (uploaded_types or ()) if str(t or "").strip()}
@@ -2792,7 +3017,15 @@ def apply_cashline_document_status(evaluation: dict, uploaded_types=(), sla_expi
     items = evaluation.get("cashline_data_verification")
     if not isinstance(items, list) or not items:
         return evaluation
-    from compliance.documents import DOCUMENT_TYPES, _CASHLINE_DOC_FIELDS
+    from compliance.documents import (
+        DOCUMENT_TYPES,
+        _CASHLINE_DOC_FIELDS,
+        doc_requirements_waived,
+    )
+
+    # Sama dengan sisi statik: kewajiban yang sudah dicabut tidak menangguhkan apa pun.
+    if doc_requirements_waived(evaluation):
+        return evaluation
 
     have = {str(t).strip() for t in (uploaded_types or ()) if str(t or "").strip()}
     out, changed = [], False
@@ -2816,12 +3049,117 @@ def apply_cashline_document_status(evaluation: dict, uploaded_types=(), sla_expi
         out.append({
             **v,
             "match": "PENDING",
+            # ``item_score`` DIKEMBALIKAN ke 0 (bukan dibiarkan negatif peninggalan
+            # MISMATCH): PENDING adalah PENANGGUHAN, tidak memotong skor — sama seperti
+            # item scorecard pasangannya di ``_propagate_cashline_to_scorecard``. Tanpa
+            # ini baris pending masih membawa item_score negatif, sehingga "Ringkasan
+            # Penilaian AI" (dashboard/XLSX) menampilkan baris "Pengurangan – Verifikasi
+            # data" untuk field yang sebenarnya belum divonis apa pun (tiket 030424nJOA,
+            # nama_pemilik_rekening menunggu cover buku tabungan).
+            "item_score": 0,
             "reason": (f"{base}; menunggu dokumen {label} sampai tenggat H+2."
                        if base else
                        f"Menunggu dokumen {label} sampai tenggat H+2."),
         })
         changed = True
     return {**evaluation, "cashline_data_verification": out} if changed else evaluation
+
+
+def apply_mus_exception_document_status(
+    evaluation: dict,
+    uploaded_types=(),
+    sla_expired: bool = False,
+    doc_confirmed: bool = False,
+) -> dict:
+    """Terapkan gerbang dokumen pada pengecualian MUS penyakit whitelist (11
+    September 2026, lihat docs/csv_bank/11 September 2026/MUS_logic_update.md).
+
+    ``mus_exemption.resolve`` (dipanggil worker, hasilnya PERMANEN di DB) hanya tahu
+    EXEMPT/NOT_EXEMPT dari bacaan transkrip. Fungsi READ-TIME ini menambah satu
+    lapis di atasnya KHUSUS untuk penyakit yang termasuk
+    ``mus_exemption.DISEASE_WHITELIST`` (``mus_exemption.disease_listed``,
+    diklasifikasi LLM): Bank Mega meminta screenshot email konfirmasi sebelum
+    pengecualian itu benar-benar berlaku.
+
+    ``disease_listed=False`` (penyakit di luar whitelist) turun ke ``NOT_EXEMPT``
+    SEGERA, tanpa jalur dokumen sama sekali.
+
+    ``disease_listed=True`` punya tiga keadaan, sama persis polanya dengan
+    ``apply_static_document_status``/``apply_cashline_document_status``:
+
+    * dokumen konfirmasi SUDAH terbukti (``doc_confirmed`` — OCR menemukan ticket ID
+      yang cocok DAN kalimat persetujuan) -> tetap ``EXEMPT``.
+    * belum terbukti, tenggat H+2 BELUM lewat -> ``PENDING`` (BARU — nilai status
+      yang belum pernah ada sebelumnya di ``mus_exemption``). 11 item scorecard MUS
+      (``scoring.is_mus_item``) yang masih ``TIDAK_DINILAI`` ikut ditulis ulang jadi
+      ``"PENDING"`` supaya QC yang melihat detail tiket paham kenapa item itu belum
+      final — mirip pola ``_propagate_verification_to_scorecard``.
+    * belum terbukti, tenggat SUDAH lewat -> turun ke ``NOT_EXEMPT``: jalur normal
+      (``scoring.mus_wajib_tidak_dipenuhi``) lalu memotong penuh bobot MUS, sama
+      seperti gagal membuktikan dokumen lain.
+
+    Hasil LAMA yang belum punya field ``disease_listed`` sama sekali (evaluasi
+    sebelum prompt ini diperbarui) TIDAK digerbang — field itu belum pernah
+    ditanyakan ke LLM, jadi tidak adanya bukan berarti penyakitnya di luar
+    whitelist.
+
+    Non-destruktif. Dipanggil di titik yang sama dengan
+    ``apply_static_document_status``/``apply_cashline_document_status``.
+    """
+    if not evaluation:
+        return evaluation
+    block = evaluation.get("mus_exemption")
+    if not isinstance(block, dict):
+        return evaluation
+    if str(block.get("status") or "").strip().upper() != "EXEMPT":
+        return evaluation
+    if "disease_listed" not in block:
+        return evaluation
+
+    have = {str(t).strip() for t in (uploaded_types or ()) if str(t or "").strip()}
+    uploaded = "mus_exception_confirmation" in have
+
+    if not block.get("disease_listed"):
+        new_status, reason = "NOT_EXEMPT", (
+            "Kondisi kesehatan yang disebutkan tidak termasuk daftar penyakit yang "
+            "lazim disetujui Bank Mega untuk pengecualian MUS, sehingga Mega Ultima "
+            "Shield tetap wajib."
+        )
+    elif doc_confirmed:
+        return evaluation  # sudah terbukti -> tetap EXEMPT, tidak ada yang berubah
+    elif not sla_expired:
+        new_status = "PENDING"
+        reason = (
+            "Dokumen konfirmasi pengecualian MUS sudah diunggah, menunggu hasil "
+            "OCR/validasi sampai tenggat H+2."
+            if uploaded else
+            "Menunggu dokumen konfirmasi pengecualian MUS sampai tenggat H+2."
+        )
+    else:
+        new_status, reason = "NOT_EXEMPT", (
+            "Dokumen konfirmasi pengecualian MUS tidak terbukti sampai tenggat H+2 "
+            "(belum diunggah, atau OCR tidak menemukan ticket ID/kalimat persetujuan "
+            "yang sesuai), sehingga Mega Ultima Shield tetap wajib."
+        )
+
+    out = {**evaluation, "mus_exemption": {**block, "status": new_status, "reason": reason}}
+
+    if new_status == "PENDING":
+        from compliance.scoring import is_mus_item
+
+        items = evaluation.get("scorecard_result")
+        if isinstance(items, list) and items:
+            new_items, changed = [], False
+            for it in items:
+                v = it if isinstance(it, dict) else {}
+                if is_mus_item(v) and str(v.get("status") or "").strip().upper() == "TIDAK_DINILAI":
+                    new_items.append({**v, "status": "PENDING"})
+                    changed = True
+                else:
+                    new_items.append(it)
+            if changed:
+                out["scorecard_result"] = new_items
+    return out
 
 
 def apply_approved_card_holder_appeals(evaluation: dict, approved_appeals: list) -> dict:
@@ -2898,6 +3236,7 @@ def apply_approved_critical_compliance_appeals(evaluation: dict, approved_appeal
     # flip + pengembalian irisan penaltinya dipakai bersama ``normalize_static_verification``
     # lewat ``_restore_critical_items`` — satu salinan logika, satu perilaku.
     return _restore_critical_items(evaluation, approved_codes)
+
 
 # ---------------------------------------------------------------------------
 # QC "add error code" bandings — the INVERSE of the remove/verification appliers

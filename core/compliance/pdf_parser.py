@@ -237,6 +237,17 @@ def _sort_key(path: str, idx: int):
     return (ts, idx)
 
 
+def sort_pdf_paths(pdf_paths: list[str]) -> list[str]:
+    """PDF satu tiket urut kronologis — timestamp nama berkas, lalu mtime, lalu urutan asal.
+
+    Dipakai ``build_transcript`` dan klasifikasi jenis recording (``compliance.
+    recording_type``). Keduanya HARUS memakai urutan yang sama: label "perbaikan"
+    berarti "mengulang rekaman sebelumnya", jadi urutan yang dilihat model klasifikasi
+    tidak boleh berbeda dari urutan panggilan yang dinilai.
+    """
+    return [path for _, path in sorted(enumerate(pdf_paths), key=lambda t: _sort_key(t[1], t[0]))]
+
+
 def build_transcript(
     pdf_paths: list[str],
 ) -> tuple[list[str], list[dict], str, list[dict]]:
@@ -261,8 +272,7 @@ def build_transcript(
     segmen pun tetap masuk daftar dengan ``"0m 0s"``, supaya jumlah butirnya
     selalu sama dengan jumlah source file.
     """
-    indexed = sorted(enumerate(pdf_paths), key=lambda t: _sort_key(t[1], t[0]))
-    sorted_paths = [path for _, path in indexed]
+    sorted_paths = sort_pdf_paths(pdf_paths)
     sorted_filenames = [os.path.basename(path) for path in sorted_paths]
 
     messages: list[dict] = []

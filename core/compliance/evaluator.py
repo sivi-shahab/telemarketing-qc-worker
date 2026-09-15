@@ -145,16 +145,40 @@ def _build_user_content(
     kb_text: str,
     scorecard_text: str,
     source_files: list[str] | None,
+    reference_text: str = "",
 ) -> str:
     transcript = format_transcript_for_llm(messages, source_files)
-    return (
-        "TRANSCRIPT:\n"
-        f"{transcript}\n\n"
-        "KB:\n"
-        f"{kb_text}\n\n"
-        "SCORECARD:\n"
-        f"{scorecard_text}"
-    )
+    # URUTAN INI DISENGAJA — bagian yang identik antar-panggilan berdiri PALING DEPAN,
+    # bagian yang berubah tiap tiket didorong ke belakang (7 September 2026, dipertajam
+    # 10 September 2026 dengan memisah reference data dari scorecard).
+    #
+    # Endpoint melakukan prompt caching otomatis atas AWALAN permintaan yang identik;
+    # terukur 18.176 dari 18.571 token ter-cache (98%) pada panggilan kedua dengan
+    # awalan sama. Selama sesuatu yang berubah tiap tiket berdiri di depan, semua yang
+    # di belakangnya ikut dingin — termasuk KB 24.290 token yang identik SELURUH tiket.
+    #
+    # Lapisannya, dari yang paling stabil:
+    #   1. prompt campaign (49.832 token) — identik semua panggilan
+    #   2. KB (24.290)                    — identik semua tiket
+    #   3. SCORECARD (campaign.scorecard_text saja, ~3.788) — identik semua tiket
+    #   4. REFERENCE DATA (data nasabah dari DB) — per tiket, tetapi identik untuk
+    #      SEMUA panggilan paralel satu tiket, jadi tetap ter-cache di panggilan ke-2..N
+    #   5. TRANSCRIPT — unik per rekaman
+    #
+    # ``reference_text`` DULU digabung ke ``scorecard_text`` oleh pemanggil, membuat
+    # lapisan 3 ikut berubah tiap tiket. Dipisah di sini supaya scorecard tetap masuk
+    # awalan bersama.
+    #
+    # Isi TIDAK berubah — hanya letaknya. Tetapi bentuk prompt yang berubah bisa
+    # menggeser perilaku model, jadi wajib diuji dengan reprocess pembanding.
+    blocks = [
+        "KB:\n" f"{kb_text}",
+        "SCORECARD:\n" f"{scorecard_text}",
+    ]
+    if (reference_text or "").strip():
+        blocks.append("REFERENCE DATA:\n" f"{reference_text}")
+    blocks.append("TRANSCRIPT:\n" f"{transcript}")
+    return "\n\n".join(blocks)
 
 
 def evaluate(
@@ -170,6 +194,7 @@ def evaluate(
     seed: int | None = None,
     reasoning_effort: str | None = None,
     return_usage: bool = False,
+    reference_text: str = "",
 ):
     """Run a single LLM evaluation of the transcript against the campaign config.
 
@@ -187,8 +212,15 @@ def evaluate(
     True, returns ``(evaluation, usage)`` instead, where ``usage`` is
     ``{"input_token": int | None, "output_token": int | None}`` taken from the
     LLM response's token accounting.
+
+    ``reference_text`` (data acuan nasabah dari DB) dikirim sebagai blok tersendiri
+    SETELAH scorecard dan SEBELUM transkrip. Dipisah dari ``scorecard_text`` supaya
+    scorecard campaign — yang identik antar-tiket — tetap masuk awalan yang ter-cache;
+    lihat ``_build_user_content``.
     """
-    user_content = _build_user_content(messages, kb_text, scorecard_text, source_files)
+    user_content = _build_user_content(
+        messages, kb_text, scorecard_text, source_files, reference_text
+    )
     chat_messages = [
         {"role": "system", "content": prompt_text},
         {"role": "user", "content": user_content},
@@ -223,9 +255,26 @@ def evaluate(
 
 
 def _extract_usage(response) -> dict:
-    """Pull token counts from an OpenAI-compatible response (``None`` if absent)."""
+    """Pull token counts from an OpenAI-compatible response (``None`` if absent).
+
+    ``cached_token`` dan ``reasoning_token`` ikut diambil (7 September 2026) karena
+    keduanya menentukan biaya sebenarnya dan tidak bisa diperkirakan dari luar:
+
+    * endpoint melakukan prompt caching otomatis — terukur 98% pada awalan identik — dan
+      bagian yang ter-cache ditagih lebih murah, jadi "berapa token masuk" saja tidak
+      cukup untuk menghitung ongkos;
+    * ``reasoning_effort`` menghasilkan token penalaran yang ditagih sebagai keluaran
+      tetapi TIDAK muncul di hasil: pada panggilan klasifikasi, JSON-nya hanya empat
+      baris sementara ``completion_tokens``-nya 1.228.
+
+    Keduanya opsional pada respons; ``None`` bila server tidak melaporkannya.
+    """
     usage = getattr(response, "usage", None)
+    prompt_details = getattr(usage, "prompt_tokens_details", None)
+    completion_details = getattr(usage, "completion_tokens_details", None)
     return {
         "input_token": getattr(usage, "prompt_tokens", None),
         "output_token": getattr(usage, "completion_tokens", None),
+        "cached_token": getattr(prompt_details, "cached_tokens", None),
+        "reasoning_token": getattr(completion_details, "reasoning_tokens", None),
     }

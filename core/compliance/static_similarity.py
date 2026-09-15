@@ -80,6 +80,24 @@ def _ratio(a: str, b: str) -> "float | None":
 # satu karakter, sehingga nama yang memang berhubung ("Nur-Aini") tidak ikut digabung.
 _SPELLED_RUN = re.compile(r"\b[0-9A-Za-z](?:-[0-9A-Za-z])+\b")
 
+# PENJELAS EJAAN: nasabah menyebut nama lalu menegaskan hurufnya — "Zandra pakai Z",
+# "Stefanus pakai f", "Wisma Indocement, pakai C ya". Ini keterangan cara menulis, BUKAN
+# bagian dari namanya, tetapi tanpa dibuang ia ikut dihitung sebagai huruf pembanding —
+# dan bisa MENAIKKAN skor secara palsu: pada tiket 030808fLO1 "Zandra pakai Z" bernilai
+# 57% terhadap Ascend "ZANDRA WILIAM" sementara "Zandra" saja 46%, karena huruf "pakai z"
+# kebetulan menyerempet "wiliam". Kebisingan tidak boleh menentukan vonis, ke arah mana
+# pun ia mendorong.
+#
+# Sengaja SEMPIT: yang dibuang hanya bila kata penanda diikuti SATU huruf. "Pakai dong.
+# Delapan satu." (tiket 061050ugYQ) tidak tersentuh karena "dong" bukan huruf tunggal,
+# dan nama yang memuat kata "dengan"/"huruf" di tengahnya tetap utuh selama kata
+# sesudahnya bukan huruf tunggal.
+_SPELLING_CLARIFIER = re.compile(
+    r"\b(?:pakai|pake|memakai|dengan|huruf)\s+(?:huruf\s+)?[0-9A-Za-z]\b"
+    r"(?:\s+(?:besar|kecil|kapital|ya))*",
+    re.IGNORECASE,
+)
+
 # Tanda baca penutup ucapan yang ikut terbawa transkrip ("Zaitun.", "Farida,").
 _TRAILING_PUNCT = ".,;:!?-"
 
@@ -138,11 +156,15 @@ def _norm_name(value) -> str:
       bentuk dan masing-masing sudah menjadi kandidat tersendiri.
 
     Label field dan sapaan yang menempel di awal ucapan juga dibuang — lihat
-    ``_strip_leading_noise``.
+    ``_strip_leading_noise`` — begitu pula PENJELAS EJAAN ("pakai Z", "huruf f"), lihat
+    ``_SPELLING_CLARIFIER``.
 
     Normalisasi ini dipakai pada KEDUA sisi perbandingan; acuan Ascend berupa nama polos
     huruf besar sehingga tidak terpengaruh."""
     text = _SPELLED_RUN.sub(lambda m: m.group(0).replace("-", ""), str(value or ""))
+    # Penjelas ejaan dibuang SESUDAH ejaan huruf-per-huruf digabung, supaya "N-G pakai N"
+    # tidak kehilangan ejaannya lebih dulu.
+    text = _SPELLING_CLARIFIER.sub(" ", text)
     text = re.sub(r"\s+", " ", text).strip().casefold()
     text = _strip_leading_noise(text)
     return text.strip(_TRAILING_PUNCT).strip()

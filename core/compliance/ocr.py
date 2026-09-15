@@ -10,11 +10,29 @@ This replaces the previous multimodal-chat / page-image approach: Mistral
 Document AI ingests the PDF directly, so no page rendering is needed.
 """
 import base64
+import io
 import json
 
 import requests
 
 from compliance.evaluator import _parse_llm_json_object
+
+
+def image_bytes_to_pdf(image_bytes: bytes) -> bytes:
+    """Convert a JPEG/PNG image to single-page PDF bytes.
+
+    Dipakai dokumen yang diunggah sebagai screenshot (mis. konfirmasi pengecualian
+    MUS, lihat ``prompt.ocr_mus_exception``) — ``ocr_document`` di bawah cuma
+    menerima PDF lewat ``document_url`` data-URI, dan keputusan 11 September 2026
+    TIDAK membuat jalur OCR khusus gambar baru; gambar dikonversi di sini saja,
+    sebelum masuk pipeline PDF yang sudah ada.
+    """
+    from PIL import Image
+
+    with Image.open(io.BytesIO(image_bytes)) as img:
+        buf = io.BytesIO()
+        img.convert("RGB").save(buf, format="PDF")
+        return buf.getvalue()
 
 
 def ocr_document(

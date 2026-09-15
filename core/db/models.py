@@ -128,6 +128,12 @@ class Result(Base):
     started_at = Column(DateTime)
     completed_at = Column(DateTime)
     processing_sec = Column(Float)
+    # Checkpoint terakhir yang SELESAI dijalankan worker (lihat _Tahap di
+    # worker/tasks/process_transcript.py — nama persis sama dengan key ``tahap.catat``,
+    # mis. "unduh_pdf", "penilaian_llm"). Dipakai dashboard untuk menampilkan tabel
+    # progres saat status masih pending/processing, supaya QC tahu sedang di tahap
+    # mana, bukan cuma "processing" tanpa rincian. NULL sebelum checkpoint pertama.
+    current_stage = Column(String(50))
 
 
 class ResultData(Base):
