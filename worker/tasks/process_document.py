@@ -20,7 +20,7 @@ from sqlalchemy.orm import sessionmaker
 
 from services.s3_buckets import build_minio_client
 from compliance.documents import build_ocr_request, normalize_ocr_json
-from compliance.ocr import ocr_document
+from compliance.ocr import image_bytes_to_pdf, ocr_document
 from compliance.reference_data import (
     build_document_reference,
     customer_id_from_filenames,
@@ -90,6 +90,10 @@ def process_document(result_id: str):
             try:
                 crud.update_document_status(db, doc_id, "processing")
                 pdf_bytes = _download_object(doc.object_path)
+                # Screenshot (JPEG/PNG) -> PDF: pipeline OCR di bawah cuma menerima
+                # PDF (lihat compliance.ocr.image_bytes_to_pdf).
+                if (doc.mime_type or "").startswith("image/"):
+                    pdf_bytes = image_bytes_to_pdf(pdf_bytes)
 
                 # Build the bank reference ("acuan") for this document type.
                 reference: dict = {}
