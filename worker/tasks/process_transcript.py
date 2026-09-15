@@ -526,13 +526,22 @@ def process_transcript(result_id: str):
                 _usage.get("output_token"), _usage.get("reasoning_token"),
             )
         else:
+            # Dibaca ke variabel lokal SEBELUM thread dimulai. `tahap.catat` di atas
+            # commit (set_result_stage), sehingga atribut `campaign` sudah kedaluwarsa;
+            # membacanya di dalam thread memicu lazy-load serentak pada satu Session
+            # dan tiket gagal "session is provisioning a new connection" (15 September
+            # 2026, ditemukan e2e).
+            prompt_text = campaign.prompt_text
+            kb_text = campaign.kb_text
+            scorecard_text = campaign.scorecard_text
+
             def _nilai_satu(path):
                 f_names, f_msgs, _d, _ds = build_transcript([path])
                 ev, usage = evaluate(
-                    prompt_text=campaign.prompt_text,
+                    prompt_text=prompt_text,
                     messages=f_msgs,
-                    kb_text=campaign.kb_text,
-                    scorecard_text=campaign.scorecard_text,
+                    kb_text=kb_text,
+                    scorecard_text=scorecard_text,
                     reference_text=reference_text,
                     llm_client=_llm_client(),
                     model=settings.llm_model,
