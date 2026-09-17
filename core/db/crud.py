@@ -402,12 +402,16 @@ def list_collection_results(
     date_end=None,
     page: int = 1,
     limit: int = 20,
+    uploaded_by_role: Optional[str] = None,
+    exclude_uploaded_by_role: Optional[str] = None,
 ):
     """Hasil campaign Collection beserta ``result_json``-nya — HANYA tabel
     ``results`` + ``result_data``; tidak ada join ke tms_cashline / ascend.
 
     ``campaigns`` adalah irisan campaign Collection dengan cakupan user; list kosong
-    = tidak ada yang boleh dilihat. ``ai_status`` (PASS/FAIL) dihitung dari laporan
+    = tidak ada yang boleh dilihat. ``uploaded_by_role`` / ``exclude_uploaded_by_role``
+    = isolasi upload QC Support, sama artinya dengan di ``list_results`` (lihat
+    ``api.qc_scope.collection_view_scope``). ``ai_status`` (PASS/FAIL) dihitung dari laporan
     yang dinormalisasi, jadi penyaringnya di Python — volumenya kecil.
     """
     from compliance.collection_report import normalize_stored_report
@@ -428,6 +432,13 @@ def list_collection_results(
     q = hidden_ticket_filter(db.query(Result, ResultData.result_json).outerjoin(
         ResultData, ResultData.id == latest_data_id))
     q = q.filter(func.lower(Result.campaign).in_([c.strip().casefold() for c in campaigns]))
+    if uploaded_by_role is not None:
+        q = q.filter(Result.uploaded_by_role == uploaded_by_role)
+    if exclude_uploaded_by_role is not None:
+        q = q.filter(
+            (Result.uploaded_by_role.is_(None))
+            | (Result.uploaded_by_role != exclude_uploaded_by_role)
+        )
     if status:
         q = q.filter(Result.status == status)
     if ticket_id:
