@@ -260,3 +260,58 @@ def normalize_weighted_report(value, configured_maximum=None):
         if isinstance(raw.get(key), str):
             report[key] = raw[key]
     return report
+
+
+def build_collection_result_json(*, result_id, campaign, source_files, report,
+                                 processed_at, processing_sec, audio_duration=None):
+    """``result_json`` tiket Collection. Sengaja TANPA ``reference_data``,
+    ``assigned_agent``, ``recording_types`` dsb.: semua itu turunan TMS/Ascend dan
+    jalur ini tidak menyentuhnya. ``report_type`` membuat pembaca tidak pernah
+    salah mengira isinya format Cashline."""
+    return {
+        "report_type": REPORT_TYPE,
+        "result_id": str(result_id),
+        "campaign": campaign,
+        "source_files": list(source_files),
+        "num_calls": len(source_files),
+        "audio_duration": audio_duration,
+        "processed_at": processed_at,
+        "processing_sec": round(processing_sec, 2),
+        "evaluation": report,
+    }
+
+
+def is_collection_result_json(result_json) -> bool:
+    return isinstance(result_json, dict) and result_json.get("report_type") == REPORT_TYPE
+
+
+def _ticket_id(source_files):
+    first = (source_files or [None])[0]
+    return first.split("_", 1)[0] if isinstance(first, str) and first else None
+
+
+def collection_list_row(result, result_json):
+    """Satu baris tabel menu Collection. Laporan dibaca ULANG lewat normalizer
+    supaya baris lama yang tersimpan sebelum aturan berubah ikut konsisten."""
+    report = (normalize_weighted_report(result_json.get("evaluation"))
+              if is_collection_result_json(result_json) else None)
+    iso = lambda dt: dt.isoformat() if dt is not None else None  # noqa: E731
+    return {
+        "result_id": str(result.id),
+        "campaign": result.campaign,
+        "ticket_id": _ticket_id(result.source_files),
+        "source_files": list(result.source_files or []),
+        "status": result.status,
+        "uploaded_at": iso(result.uploaded_at),
+        "completed_at": iso(result.completed_at),
+        "agent_name": report["agent_name"] if report else None,
+        "consumer_full_name": report["consumer_full_name"] if report else None,
+        "product_type": report["product_type"] if report else None,
+        "score": report["ai_score_phase_2"] if report else None,
+        "maximum_score": report["maximum_score"] if report else None,
+        "passing_grade": report["passing_grade"] if report else None,
+        "ai_status": report["ai_status"] if report else None,
+        "critical_status": report["critical_compliance_check"]["status"] if report else None,
+        "commitment_status": report["commitment_status"]["status"] if report else None,
+        "error_code_count": len(report["error_codes"]) if report else 0,
+    }
