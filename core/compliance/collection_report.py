@@ -164,10 +164,12 @@ def _scorecard(value):
         if not isinstance(it, dict):
             continue
         status = _scorecard_status(it.get("status"))
-        weight = _num(it.get("weight")) or 0
+        weight = max(_num(it.get("weight")) or 0, 0)
         declared = _num(it.get("item_score"))
         if declared is not None:
-            score = declared
+            # Dijepit ke [0, bobot]: model pernah memberi skor di atas bobot item,
+            # dan satu item tidak boleh menyumbang lebih dari bobotnya ke total.
+            score = min(max(declared, 0), weight)
         elif status == "SESUAI":
             score = weight
         elif status == "BELUM_SESUAI":
@@ -224,6 +226,38 @@ def scorecard_maximum(scorecard_text):
     return total if total > 0 else None
 
 
+def apply_configured_weights(raw, scorecard_text):
+    """Salinan ``raw`` dengan bobot tiap item ``scorecard_result`` diambil dari
+    scorecard campaign (JSON array ``{item_code, weight}``) bila item_code-nya ada.
+
+    Bobot adalah konfigurasi, bukan keluaran model: tanpa ini model bisa menaikkan
+    bobot item yang ia nilai SESUAI. Item yang tidak ada di konfigurasi, atau
+    konfigurasi yang tidak terbaca, dibiarkan apa adanya. Masukan tidak diubah."""
+    if not isinstance(raw, dict) or not isinstance(raw.get("scorecard_result"), list):
+        return raw
+    try:
+        parsed = json.loads(scorecard_text)
+    except (TypeError, ValueError):
+        return raw
+    if not isinstance(parsed, list):
+        return raw
+    weights = {}
+    for item in parsed:
+        if isinstance(item, dict) and isinstance(item.get("item_code"), str):
+            w = _num(item.get("weight"))
+            if w is not None:
+                weights[item["item_code"].strip()] = w
+    if not weights:
+        return raw
+    items = []
+    for it in raw["scorecard_result"]:
+        code = it.get("item_code") if isinstance(it, dict) else None
+        if isinstance(code, str) and code.strip() in weights:
+            it = {**it, "weight": weights[code.strip()]}
+        items.append(it)
+    return {**raw, "scorecard_result": items}
+
+
 def normalize_weighted_report(value, configured_maximum=None):
     """Satu gerbang untuk setiap laporan berbobot — saat keluar dari model DAN saat
     dibaca ulang dari ``result_data``, sehingga catatan lama ikut tersembuhkan."""
@@ -262,6 +296,19 @@ def normalize_weighted_report(value, configured_maximum=None):
     return report
 
 
+def normalize_stored_report(evaluation):
+    """Normalisasi ulang laporan yang DIBACA dari ``result_data``.
+
+    Maksimum yang tersimpan (``maximum_score``, hasil konfigurasi scorecard saat
+    ditulis worker) dipakai lagi sebagai ``configured_maximum``. Tanpanya balasan
+    terpotong dinilai ulang terhadap jumlah bobot item yang dijawab saja, sehingga
+    FAIL bisa berubah PASS hanya karena dibaca ulang."""
+    stored = evaluation.get("maximum_score") if isinstance(evaluation, dict) else None
+    maximum = _num(stored)
+    return normalize_weighted_report(
+        evaluation, configured_maximum=maximum if maximum is not None and maximum > 0 else None)
+
+
 def build_collection_result_json(*, result_id, campaign, source_files, report,
                                  processed_at, processing_sec, audio_duration=None):
     """``result_json`` tiket Collection. Sengaja TANPA ``reference_data``,
@@ -293,7 +340,7 @@ def _ticket_id(source_files):
 def collection_list_row(result, result_json):
     """Satu baris tabel menu Collection. Laporan dibaca ULANG lewat normalizer
     supaya baris lama yang tersimpan sebelum aturan berubah ikut konsisten."""
-    report = (normalize_weighted_report(result_json.get("evaluation"))
+    report = (normalize_stored_report(result_json.get("evaluation"))
               if is_collection_result_json(result_json) else None)
     iso = lambda dt: dt.isoformat() if dt is not None else None  # noqa: E731
     return {
