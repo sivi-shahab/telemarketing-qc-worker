@@ -49,7 +49,9 @@ logger = logging.getLogger(__name__)
 @lru_cache()
 def _session_factory():
     settings = get_worker_settings()
-    engine = create_engine(settings.database_url, pool_pre_ping=True)
+    engine = create_engine(
+        settings.database_url, pool_pre_ping=True, connect_args=settings.db_connect_args
+    )
     return sessionmaker(bind=engine, autocommit=False, autoflush=False)
 
 
