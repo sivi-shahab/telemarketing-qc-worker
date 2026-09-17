@@ -398,15 +398,17 @@ def is_hidden_ticket(ticket_id) -> bool:
 
 
 def exclude_hidden_results(query):
-    """Saring query ``Result`` agar tidak memuat tiket tersembunyi.
+    """Saring query ``Result`` agar tidak memuat tiket tersembunyi — dan, sejak
+    17 September 2026, tiket campaign Collection (``COLLECTION_CAMPAIGNS``).
 
     Satu-satunya tempat ekspresi penyaringnya ditulis untuk sisi agregasi — dipakai
     ``done_results_query`` dan setiap query ``Result`` lain di modul ini yang tidak
-    lewat sana.
+    lewat sana. Karena itu pengecualian Collection ditempel di sini: seluruh query
+    masuk Statistics melewati fungsi ini, jadi satu titik menutup semuanya.
     """
     from db import crud
 
-    return crud.hidden_ticket_filter(query)
+    return crud.exclude_collection_campaigns(crud.hidden_ticket_filter(query))
 
 
 def _parse_submit_datetime(value):
@@ -2903,8 +2905,12 @@ def compute_stats_snapshot(db, customer_ids=None, roster_uids=None) -> dict:
         # itu akan bocor ke KPI card, jadi status count dihitung ulang dari tiket
         # dalam scope saja (semua status, bukan cuma done). active_campaigns tetap
         # global — itu jumlah campaign aktif, bukan angka milik satu area.
+        # Lewat ``exclude_hidden_results`` sama seperti ``done_results`` di atas:
+        # tanpa itu tiket tersembunyi dan tiket Collection ikut terhitung di KPI card
+        # sementara tabel di bawahnya tidak memuatnya.
         statuses = (
-            [s for (s,) in db.query(Result.status).filter(prefix.in_(ids)).all()]
+            [s for (s,) in exclude_hidden_results(db.query(Result.status))
+             .filter(prefix.in_(ids)).all()]
             if ids else []
         )
         counts = {"pending": 0, "processing": 0, "done": 0, "failed": 0}

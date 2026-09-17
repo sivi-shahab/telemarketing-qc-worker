@@ -10,6 +10,7 @@ Nilai default kosong berarti fitur collection mati total: tidak ada campaign yan
 dianggap collection dan seluruh perilaku existing tidak berubah. Ini juga
 perilaku saat rollback.
 """
+import os
 
 
 def parse_collection_campaigns(raw) -> frozenset:
@@ -22,6 +23,13 @@ def parse_collection_campaigns(raw) -> frozenset:
     if not isinstance(raw, str):
         return frozenset()
     return frozenset(part.strip().casefold() for part in raw.split(",") if part.strip())
+
+
+def collection_campaigns_from_env() -> frozenset:
+    """``COLLECTION_CAMPAIGNS`` yang sudah dinormalkan, dibaca TIAP kali (tanpa cache)
+    — dipakai kode bersama (crud, agregasi Statistics) yang tidak punya akses ke
+    ``api.rbac``. Kosong = fitur collection mati."""
+    return parse_collection_campaigns(os.getenv("COLLECTION_CAMPAIGNS", ""))
 
 
 def is_collection(name, allowed) -> bool:

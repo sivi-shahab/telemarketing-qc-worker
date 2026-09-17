@@ -19,6 +19,7 @@ x-worker-image: &worker-image
   environment:
     PYTHONPATH: /app
     DWH_API_BASE_URL: ${DWH_API_BASE_URL:-http://host.docker.internal:8002}
+    COLLECTION_CAMPAIGNS: ${COLLECTION_CAMPAIGNS:-}
   extra_hosts:
     - "host.docker.internal:host-gateway"
   restart: unless-stopped

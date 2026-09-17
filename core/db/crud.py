@@ -5,7 +5,7 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from threading import Lock
-from typing import Optional
+from typing import Iterable, Optional
 
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, func, desc, or_
@@ -286,6 +286,7 @@ def list_results(
     uploaded_by_username: Optional[str] = None,
     date_start=None,
     date_end=None,
+    exclude_campaigns: Optional[Iterable[str]] = None,
 ) -> tuple[list[Result], int]:
     # ``customer_ids`` (when not None) scopes results to those customer/ticket ids —
     # used to restrict a sales_agent (Team Leader) to their agents' tickets. An
@@ -325,6 +326,13 @@ def list_results(
         if not campaigns:
             return [], 0
         q = q.filter(func.lower(Result.campaign).in_([c.strip().casefold() for c in campaigns]))
+    if exclude_campaigns:
+        # Campaign Collection punya menu sendiri (format laporan berbobot); tanpa
+        # pengecualian ini tiketnya ikut tampil di Results dan dibaca sebagai Cashline.
+        q = q.filter(
+            (Result.campaign.is_(None))
+            | func.lower(Result.campaign).notin_([c.strip().casefold() for c in exclude_campaigns])
+        )
     if ticket_id:
         # The displayed "ID" is the prefix before the first "_" of the first
         # source filename (see stats._customer_id_from_files), so match that
@@ -383,6 +391,144 @@ def list_results(
     return items, total
 
 
+def collection_results_query(
+    db: Session,
+    *,
+    campaigns,
+    uploaded_by_role: Optional[str] = None,
+    exclude_uploaded_by_role: Optional[str] = None,
+    status: Optional[str] = None,
+    ticket_id: Optional[str] = None,
+    date_start=None,
+    date_end=None,
+):
+    """Query ``(Result, result_json terbaru)`` tiket Collection dalam cakupan — satu
+    definisi untuk daftar Collection Results DAN Stats Collection, supaya keduanya
+    tidak pernah berbeda pendapat soal tiket mana yang terhitung. ``None`` bila
+    ``campaigns`` kosong (tidak ada yang boleh dilihat)."""
+    if not campaigns:
+        return None
+    # Hanya result_data TERBARU per result (urutan sama dengan ``get_result_data``).
+    # Join biasa ke result_data menggandakan baris setiap kali satu tiket punya
+    # lebih dari satu evaluasi tersimpan (acks_late / proses ulang).
+    latest_data_id = (
+        db.query(ResultData.id)
+        .filter(ResultData.result_id == Result.id)
+        .order_by(desc(ResultData.created_at), desc(ResultData.id))
+        .limit(1)
+        .correlate(Result)
+        .scalar_subquery()
+    )
+    q = hidden_ticket_filter(db.query(Result, ResultData.result_json).outerjoin(
+        ResultData, ResultData.id == latest_data_id))
+    q = q.filter(func.lower(Result.campaign).in_([c.strip().casefold() for c in campaigns]))
+    if uploaded_by_role is not None:
+        q = q.filter(Result.uploaded_by_role == uploaded_by_role)
+    if exclude_uploaded_by_role is not None:
+        q = q.filter(
+            (Result.uploaded_by_role.is_(None))
+            | (Result.uploaded_by_role != exclude_uploaded_by_role)
+        )
+    if status:
+        q = q.filter(Result.status == status)
+    if ticket_id:
+        q = q.filter(Result.source_files[0].astext.ilike(f"{ticket_id.strip()}%"))
+    if date_start is not None or date_end is not None:
+        # Basis tanggal yang SAMA dengan ``list_results`` (submit_time snapshot ->
+        # generated_at -> uploaded_at WIB) supaya kedua menu sepakat soal batas hari.
+        submit_date_subq = (
+            db.query(
+                func.to_date(func.left(func.trim(_SUBMIT_TIME_JSON.astext), 10), "YYYY-MM-DD")
+            )
+            .filter(ResultData.result_id == Result.id)
+            .filter(
+                func.trim(func.coalesce(_SUBMIT_TIME_JSON.astext, "")).op("~")(
+                    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}"
+                )
+            )
+            .order_by(desc(ResultData.created_at))
+            .limit(1)
+            .correlate(Result)
+            .scalar_subquery()
+        )
+        series_date = func.coalesce(
+            submit_date_subq,
+            func.date(Result.generated_at),
+            func.date(func.timezone("Asia/Jakarta", func.timezone("UTC", Result.uploaded_at))),
+        )
+        if date_start is not None:
+            q = q.filter(series_date >= date_start)
+        if date_end is not None:
+            q = q.filter(series_date <= date_end)
+    q = q.order_by(desc(Result.uploaded_at))
+    return q
+
+
+def list_collection_results(
+    db: Session,
+    *,
+    campaigns,
+    status: Optional[str] = None,
+    ai_status: Optional[str] = None,
+    ticket_id: Optional[str] = None,
+    date_start=None,
+    date_end=None,
+    page: int = 1,
+    limit: int = 20,
+    uploaded_by_role: Optional[str] = None,
+    exclude_uploaded_by_role: Optional[str] = None,
+):
+    """Hasil campaign Collection beserta ``result_json``-nya — HANYA tabel
+    ``results`` + ``result_data``; tidak ada join ke tms_cashline / ascend.
+
+    ``campaigns`` adalah irisan campaign Collection dengan cakupan user; list kosong
+    = tidak ada yang boleh dilihat. ``uploaded_by_role`` / ``exclude_uploaded_by_role``
+    = isolasi upload QC Support, sama artinya dengan di ``list_results`` (lihat
+    ``api.qc_scope.collection_view_scope``). ``ai_status`` (PASS/FAIL) dihitung dari laporan
+    yang dinormalisasi, jadi penyaringnya di Python — volumenya kecil.
+    """
+    from compliance.collection_report import is_collection_result_json, normalize_stored_report
+
+    q = collection_results_query(
+        db, campaigns=campaigns, uploaded_by_role=uploaded_by_role,
+        exclude_uploaded_by_role=exclude_uploaded_by_role, status=status,
+        ticket_id=ticket_id, date_start=date_start, date_end=date_end,
+    )
+    if q is None:
+        return [], 0
+
+    wanted = ai_status.strip().upper() if isinstance(ai_status, str) and ai_status.strip() else None
+    if wanted is None:
+        total = q.count()
+        return [(r, rj) for r, rj in q.offset((page - 1) * limit).limit(limit).all()], total
+
+    matched = [
+        (r, rj) for r, rj in q.filter(Result.status == "done").all()
+        if is_collection_result_json(rj)
+        and normalize_stored_report(rj.get("evaluation"))["ai_status"] == wanted
+    ]
+    return matched[(page - 1) * limit : page * limit], len(matched)
+
+
+def collection_stats_rows(
+    db: Session,
+    *,
+    campaigns,
+    uploaded_by_role: Optional[str] = None,
+    exclude_uploaded_by_role: Optional[str] = None,
+    date_start=None,
+    date_end=None,
+) -> list:
+    """Seluruh tiket Collection dalam cakupan (semua status, tanpa paginasi) untuk
+    ``compliance.collection_stats.aggregate_collection_stats``."""
+    q = collection_results_query(
+        db, campaigns=campaigns, uploaded_by_role=uploaded_by_role,
+        exclude_uploaded_by_role=exclude_uploaded_by_role,
+        date_start=date_start, date_end=date_end,
+    )
+    return [] if q is None else [(r, rj) for r, rj in q.all()]
+
+
 def list_transcripts(
     db: Session,
     status: Optional[str] = None,
@@ -394,6 +540,7 @@ def list_transcripts(
     customer_ids: Optional[list[str]] = None,
     uploaded_by_role: Optional[str] = None,
     exclude_uploaded_by_role: Optional[str] = None,
+    exclude_campaigns: Optional[Iterable[str]] = None,
 ) -> tuple[list[dict], int]:
     """Flatten every Result's ``source_files`` into one row per transcript PDF —
     a single ticket/Result can bundle several call transcripts (``num_calls``).
@@ -407,6 +554,9 @@ def list_transcripts(
     ``customer_ids`` membatasi ke ticket/customer id tertentu — cakupan role, sama
     artinya dengan parameter senama di ``list_results``: ``None`` = tanpa batas,
     daftar KOSONG = tidak ada satu pun yang lolos (bukan "tanpa batas").
+
+    ``exclude_campaigns`` sama artinya dengan di ``list_results``: campaign Collection
+    punya menu sendiri dan tidak boleh ikut di menu Transcripts.
     """
     if customer_ids is not None and len(customer_ids) == 0:
         return [], 0
@@ -435,6 +585,11 @@ def list_transcripts(
         q = q.filter(Result.status == effective_status)
     if campaign:
         q = q.filter(Result.campaign == campaign)
+    if exclude_campaigns:
+        q = q.filter(
+            (Result.campaign.is_(None))
+            | func.lower(Result.campaign).notin_([c.strip().casefold() for c in exclude_campaigns])
+        )
     if ticket_id:
         # Coarse SQL pre-filter on the first file's prefix (mirrors list_results);
         # the exact per-file check below covers bundles with mixed prefixes.
@@ -535,6 +690,9 @@ def get_stats(
         # dan rata-rata waktu proses) — kalau tidak, kartu KPI akan menghitungnya
         # sementara tabel di bawahnya tidak.
         q = hidden_ticket_filter(q)
+        # Tiket Collection tidak dihitung di Statistics — lihat
+        # ``exclude_collection_campaigns``.
+        q = exclude_collection_campaigns(q)
         return q.filter(prefix.in_(customer_ids)) if customer_ids is not None else q
 
     counts = (
@@ -587,6 +745,14 @@ def get_daily_stats(db: Session, customer_ids: Optional[list[str]] = None) -> li
     if hidden:
         hidden_sql = " AND lower(split_part(source_files->>0, '_', 1)) <> ALL(:hidden)"
         params["hidden"] = hidden
+    # Tiket Collection juga dikeluarkan (predikat SQL mentah yang setara dengan
+    # ``exclude_collection_campaigns``).
+    from compliance.campaign_kind import collection_campaigns_from_env
+
+    collection = sorted(collection_campaigns_from_env())
+    if collection:
+        hidden_sql += " AND (campaign IS NULL OR lower(trim(campaign)) <> ALL(:collection))"
+        params["collection"] = collection
     rows = db.execute(
         text(f"""
             SELECT
@@ -856,16 +1022,23 @@ def _stats_signature(db: Session) -> str:
     #      Total Failure / Total Recording, tetap ditulis sebagai kelipatan.
     #      Nilainya berubah (5.5x -> 2.8x) tanpa ada data baru, jadi snapshot lama
     #      HARUS gugur.
-    version = "v23"
+    # v24: tiket campaign Collection (COLLECTION_CAMPAIGNS) dikeluarkan dari seluruh
+    #      agregasi Statistics (17 September 2026). Daftar campaign-nya ikut sidik
+    #      jari di bawah, karena mengubah env mengubah isi snapshot tanpa data baru.
+    version = "v24"
     sla = "1" if get_doc_sla_enabled(db) else "0"
     # Sidik jari daftar tersembunyi. WAJIB ikut: tanpa ini snapshot yang sudah
     # ter-cache akan terus menyajikan angka tiket yang baru disembunyikan sampai ada
     # perubahan data lain yang kebetulan menggeser tanda tangannya.
     hidden = ",".join(sorted(h.lower() for h in get_hidden_ticket_ids(db)))
     hidden_key = f"{len(hidden.split(',')) if hidden else 0}:{hashlib.md5(hidden.encode()).hexdigest()[:8]}"
+    from compliance.campaign_kind import collection_campaigns_from_env
+
+    collection = ",".join(sorted(collection_campaigns_from_env()))
+    collection_key = hashlib.md5(collection.encode()).hexdigest()[:8] if collection else "0"
     return (
         f"{version}|{res_count}|{res_up}|{res_done}|{rd_count}|{rd_max}"
-        f"|{ap_count}|{ap_rev}|{sales_key}|sla{sla}|hid{hidden_key}"
+        f"|{ap_count}|{ap_rev}|{sales_key}|sla{sla}|hid{hidden_key}|col{collection_key}"
     )
 
 
@@ -2941,6 +3114,24 @@ def hidden_ticket_filter(query):
         return query
     prefix = func.lower(func.split_part(Result.source_files[0].astext, "_", 1))
     return query.filter(~prefix.in_([h.lower() for h in hidden]))
+
+
+def exclude_collection_campaigns(query):
+    """Keluarkan tiket campaign Collection (``COLLECTION_CAMPAIGNS``) dari query
+    ``Result`` milik permukaan Cashline — dipakai seluruh agregasi Statistics.
+
+    Tiket Collection berformat laporan berbobot dan punya menu sendiri; menghitungnya
+    di Statistics berarti membacanya sebagai tiket Cashline. Env kosong = query
+    dikembalikan apa adanya (perilaku lama)."""
+    from compliance.campaign_kind import collection_campaigns_from_env
+
+    collection = collection_campaigns_from_env()
+    if not collection:
+        return query
+    return query.filter(
+        (Result.campaign.is_(None))
+        | func.lower(func.trim(Result.campaign)).notin_(sorted(collection))
+    )
 
 
 def get_doc_sla_enabled(db: Session) -> bool:
