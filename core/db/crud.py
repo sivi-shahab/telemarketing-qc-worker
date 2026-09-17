@@ -410,12 +410,23 @@ def list_collection_results(
     = tidak ada yang boleh dilihat. ``ai_status`` (PASS/FAIL) dihitung dari laporan
     yang dinormalisasi, jadi penyaringnya di Python — volumenya kecil.
     """
-    from compliance.collection_report import normalize_weighted_report
+    from compliance.collection_report import normalize_stored_report
 
     if not campaigns:
         return [], 0
+    # Hanya result_data TERBARU per result (urutan sama dengan ``get_result_data``).
+    # Join biasa ke result_data menggandakan baris setiap kali satu tiket punya
+    # lebih dari satu evaluasi tersimpan (acks_late / proses ulang).
+    latest_data_id = (
+        db.query(ResultData.id)
+        .filter(ResultData.result_id == Result.id)
+        .order_by(desc(ResultData.created_at), desc(ResultData.id))
+        .limit(1)
+        .correlate(Result)
+        .scalar_subquery()
+    )
     q = hidden_ticket_filter(db.query(Result, ResultData.result_json).outerjoin(
-        ResultData, ResultData.result_id == Result.id))
+        ResultData, ResultData.id == latest_data_id))
     q = q.filter(func.lower(Result.campaign).in_([c.strip().casefold() for c in campaigns]))
     if status:
         q = q.filter(Result.status == status)
@@ -458,7 +469,7 @@ def list_collection_results(
     matched = [
         (r, rj) for r, rj in q.filter(Result.status == "done").all()
         if isinstance(rj, dict)
-        and normalize_weighted_report(rj.get("evaluation"))["ai_status"] == wanted
+        and normalize_stored_report(rj.get("evaluation"))["ai_status"] == wanted
     ]
     return matched[(page - 1) * limit : page * limit], len(matched)
 
