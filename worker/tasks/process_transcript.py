@@ -47,6 +47,7 @@ from compliance.call_ownership import (
 )
 from compliance.campaign_kind import is_collection, parse_collection_campaigns
 from compliance.collection_report import (
+    apply_configured_weights,
     build_collection_result_json,
     normalize_weighted_report,
     scorecard_maximum,
@@ -317,7 +318,13 @@ def _process_collection(db, result, result_id, pdf_paths, settings, tahap, start
     logger.info("token penilaian (collection): masuk=%s (ter-cache=%s) keluar=%s",
                 usage.get("input_token"), usage.get("cached_token"), usage.get("output_token"))
 
+    # Bobot tiap item milik konfigurasi scorecard, bukan milik model.
+    raw = apply_configured_weights(raw, campaign.scorecard_text)
     report = normalize_weighted_report(raw, configured_maximum=configured_max)
+    if report["call_id"] == "-" and sorted_filenames:
+        # Prompt tidak menerima call_id dari pipeline, jadi model biasanya diam;
+        # ID tiket (prefix nama berkas) lebih berguna daripada "-" di header laporan.
+        report["call_id"] = customer_id_from_filenames(sorted_filenames)
     tahap.catat("gabung_dan_skor")
 
     completed_at = _utcnow()
