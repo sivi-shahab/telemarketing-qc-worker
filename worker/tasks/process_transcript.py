@@ -45,6 +45,12 @@ from compliance.call_ownership import (
     apply_agent_name_verdict,
     filter_calls_by_agent,
 )
+from compliance.campaign_kind import is_collection, parse_collection_campaigns
+from compliance.collection_report import (
+    build_collection_result_json,
+    normalize_weighted_report,
+    scorecard_maximum,
+)
 from compliance.evaluator import evaluate
 from compliance.parallel_pass import merge_parallel, pick_utama, sesuai_count
 from compliance.pdf_parser import (
@@ -251,6 +257,95 @@ def _assigned_name_online(db, customer_id: str) -> "tuple[str | None, str | None
         return None, None, (), ""
 
 
+def _collection_campaigns() -> frozenset:
+    # Dibaca tiap tiket, tidak di-cache — sama dengan api.rbac.collection_campaigns_from_env.
+    return parse_collection_campaigns(os.getenv("COLLECTION_CAMPAIGNS", ""))
+
+
+def _process_collection(db, result, result_id, pdf_paths, settings, tahap, started_at):
+    """Jalur campaign Collection: audit BERBOBOT POJK 22/2023.
+
+    Sengaja PENDEK. Seluruh langkah Cashline yang bergantung pada TMS atau Ascend —
+    pemilik panggilan (tms_cashline.agent_id), jangkar submit_time, reference data
+    DWH/Ascend, riplay, klasifikasi rekaman, MUS, resync_scores — dilewati: tiket
+    penagihan tidak punya baris di sana, dan membacanya hanya menghasilkan acuan
+    kosong yang tampak seperti data.
+    """
+    sorted_filenames, messages, audio_duration, _durations = build_transcript(pdf_paths)
+    tahap.catat("rangkai_transkrip")
+    if not messages:
+        raise ValueError(
+            "Transkrip kosong: tidak ada segmen yang bisa di-parse dari PDF "
+            "(format transkrip mungkin tidak dikenali)."
+        )
+
+    campaign = crud.get_active_campaign(db, result.campaign)
+    if campaign is None:
+        raise ValueError(f"Active campaign '{result.campaign}' not found")
+    missing = [label for label, text in (("prompt", campaign.prompt_text),
+                                         ("scorecard", campaign.scorecard_text),
+                                         ("KB", campaign.kb_text))
+               if not (text or "").strip()]
+    if missing:
+        raise ValueError(
+            f"Campaign '{result.campaign}' belum punya konfigurasi QC: "
+            f"{', '.join(missing)} masih kosong. Upload dulu lewat menu Upload Campaign."
+        )
+    # Maksimum milik konfigurasi, bukan milik subset item yang dijawab model —
+    # balasan terpotong tidak boleh mengecilkan penyebut dan menggelembungkan persen.
+    configured_max = scorecard_maximum(campaign.scorecard_text)
+    if configured_max is None:
+        logger.warning("result %s: scorecard campaign %s bukan JSON array berbobot; "
+                       "maksimum diambil dari item jawaban", result_id, result.campaign)
+    tahap.catat("campaign_dan_acuan")
+
+    raw, usage = evaluate(
+        prompt_text=campaign.prompt_text,
+        messages=messages,
+        kb_text=campaign.kb_text,
+        scorecard_text=campaign.scorecard_text,
+        reference_text="",
+        llm_client=_llm_client(),
+        model=settings.llm_model,
+        source_files=sorted_filenames,
+        temperature=settings.llm_temperature,
+        seed=settings.llm_seed,
+        reasoning_effort=settings.llm_reasoning_effort,
+        return_usage=True,
+    )
+    tahap.catat("penilaian_llm")
+    logger.info("token penilaian (collection): masuk=%s (ter-cache=%s) keluar=%s",
+                usage.get("input_token"), usage.get("cached_token"), usage.get("output_token"))
+
+    report = normalize_weighted_report(raw, configured_maximum=configured_max)
+    tahap.catat("gabung_dan_skor")
+
+    completed_at = _utcnow()
+    processing_sec = (completed_at - started_at).total_seconds()
+    final_json = build_collection_result_json(
+        result_id=result_id, campaign=result.campaign, source_files=sorted_filenames,
+        report=report, processed_at=completed_at.isoformat(),
+        processing_sec=processing_sec, audio_duration=audio_duration,
+    )
+    final_json["timings"] = tahap.data
+
+    payload = json.dumps(final_json, ensure_ascii=False).encode("utf-8")
+    result_path = f"{result_id}.json"
+    _minio_client().put_object(settings.minio_bucket_results, result_path,
+                               io.BytesIO(payload), length=len(payload),
+                               content_type="application/json")
+    crud.save_result_data(db, result_id, final_json)
+    tahap.catat("simpan_hasil")
+
+    crud.update_result_status(db, result_id, "done", result_path=result_path,
+                              completed_at=completed_at,
+                              processing_sec=round(processing_sec, 2),
+                              generated_at=latest_generated_timestamp(pdf_paths))
+    tahap.catat("tandai_selesai")
+    logger.info("waktu per tahap %s (collection): %s", result_id, tahap.ringkas())
+    return {"result_id": str(result_id), "status": "done"}
+
+
 @celery_app.task(name="worker.tasks.process_transcript.process_transcript")
 def process_transcript(result_id: str):
     settings = get_worker_settings()
@@ -273,6 +368,13 @@ def process_transcript(result_id: str):
         tahap.catat("unduh_pdf")
         if not pdf_paths:
             raise ValueError(f"No transcript PDFs found for result {result_id}")
+
+        # Campaign Collection keluar di sini, SEBELUM langkah pertama yang membaca
+        # TMS (2b). Kegagalan di dalamnya jatuh ke except/finally yang sama di bawah,
+        # jadi status failed + pembersihan /tmp tetap berlaku.
+        if is_collection(result.campaign, _collection_campaigns()):
+            return _process_collection(db, result, result_id, pdf_paths,
+                                       settings, tahap, started_at)
 
         # 2b. Buang panggilan milik agent LAIN. Satu ticket id bisa berisi panggilan
         # dari beberapa agent, sementara TMS hanya meng-assign tiket ini kepada SATU
