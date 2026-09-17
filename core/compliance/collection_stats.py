@@ -58,13 +58,13 @@ def aggregate_collection_stats(rows) -> dict:
     for result, result_json in rows:
         kpi["total"] += 1
         status = getattr(result, "status", None)
-        if status in ("pending", "processing"):
-            kpi["in_progress"] += 1
-            continue
         if status == "failed":
             kpi["failed"] += 1
             continue
         if status != "done":
+            # pending/processing — dan status lain yang tak dikenal — dihitung
+            # "Diproses" supaya done + in_progress + failed selalu sama dengan total.
+            kpi["in_progress"] += 1
             continue
         kpi["done"] += 1
         if not is_collection_result_json(result_json):
@@ -107,10 +107,11 @@ def aggregate_collection_stats(rows) -> dict:
         crit_status = check.get("status")
         critical["pass" if crit_status == "PASS" else "fail" if crit_status == "FAIL" else "unavailable"] += 1
         for it in check.get("checked_items") or []:
-            if it.get("status") != "FAIL":
+            code = (it.get("item_code") or "").strip()
+            if it.get("status") != "FAIL" or code in ("", "-"):
                 continue
-            ci = critical_items.setdefault(it.get("item_code", "-"),
-                                           {"item_code": it.get("item_code", "-"),
+            ci = critical_items.setdefault(code,
+                                           {"item_code": code,
                                             "requirement": it.get("requirement", ""), "fail": 0})
             ci["fail"] += 1
 

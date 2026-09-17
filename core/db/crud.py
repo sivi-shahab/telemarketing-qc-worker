@@ -487,7 +487,7 @@ def list_collection_results(
     ``api.qc_scope.collection_view_scope``). ``ai_status`` (PASS/FAIL) dihitung dari laporan
     yang dinormalisasi, jadi penyaringnya di Python — volumenya kecil.
     """
-    from compliance.collection_report import normalize_stored_report
+    from compliance.collection_report import is_collection_result_json, normalize_stored_report
 
     q = collection_results_query(
         db, campaigns=campaigns, uploaded_by_role=uploaded_by_role,
@@ -504,7 +504,7 @@ def list_collection_results(
 
     matched = [
         (r, rj) for r, rj in q.filter(Result.status == "done").all()
-        if isinstance(rj, dict)
+        if is_collection_result_json(rj)
         and normalize_stored_report(rj.get("evaluation"))["ai_status"] == wanted
     ]
     return matched[(page - 1) * limit : page * limit], len(matched)
