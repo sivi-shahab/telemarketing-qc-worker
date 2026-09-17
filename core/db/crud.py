@@ -496,6 +496,7 @@ def list_transcripts(
     customer_ids: Optional[list[str]] = None,
     uploaded_by_role: Optional[str] = None,
     exclude_uploaded_by_role: Optional[str] = None,
+    exclude_campaigns: Optional[Iterable[str]] = None,
 ) -> tuple[list[dict], int]:
     """Flatten every Result's ``source_files`` into one row per transcript PDF —
     a single ticket/Result can bundle several call transcripts (``num_calls``).
@@ -509,6 +510,9 @@ def list_transcripts(
     ``customer_ids`` membatasi ke ticket/customer id tertentu — cakupan role, sama
     artinya dengan parameter senama di ``list_results``: ``None`` = tanpa batas,
     daftar KOSONG = tidak ada satu pun yang lolos (bukan "tanpa batas").
+
+    ``exclude_campaigns`` sama artinya dengan di ``list_results``: campaign Collection
+    punya menu sendiri dan tidak boleh ikut di menu Transcripts.
     """
     if customer_ids is not None and len(customer_ids) == 0:
         return [], 0
@@ -537,6 +541,11 @@ def list_transcripts(
         q = q.filter(Result.status == effective_status)
     if campaign:
         q = q.filter(Result.campaign == campaign)
+    if exclude_campaigns:
+        q = q.filter(
+            (Result.campaign.is_(None))
+            | func.lower(Result.campaign).notin_([c.strip().casefold() for c in exclude_campaigns])
+        )
     if ticket_id:
         # Coarse SQL pre-filter on the first file's prefix (mirrors list_results);
         # the exact per-file check below covers bundles with mixed prefixes.
@@ -637,6 +646,9 @@ def get_stats(
         # dan rata-rata waktu proses) — kalau tidak, kartu KPI akan menghitungnya
         # sementara tabel di bawahnya tidak.
         q = hidden_ticket_filter(q)
+        # Tiket Collection tidak dihitung di Statistics — lihat
+        # ``exclude_collection_campaigns``.
+        q = exclude_collection_campaigns(q)
         return q.filter(prefix.in_(customer_ids)) if customer_ids is not None else q
 
     counts = (
@@ -689,6 +701,14 @@ def get_daily_stats(db: Session, customer_ids: Optional[list[str]] = None) -> li
     if hidden:
         hidden_sql = " AND lower(split_part(source_files->>0, '_', 1)) <> ALL(:hidden)"
         params["hidden"] = hidden
+    # Tiket Collection juga dikeluarkan (predikat SQL mentah yang setara dengan
+    # ``exclude_collection_campaigns``).
+    from compliance.campaign_kind import collection_campaigns_from_env
+
+    collection = sorted(collection_campaigns_from_env())
+    if collection:
+        hidden_sql += " AND (campaign IS NULL OR lower(trim(campaign)) <> ALL(:collection))"
+        params["collection"] = collection
     rows = db.execute(
         text(f"""
             SELECT
@@ -958,16 +978,23 @@ def _stats_signature(db: Session) -> str:
     #      Total Failure / Total Recording, tetap ditulis sebagai kelipatan.
     #      Nilainya berubah (5.5x -> 2.8x) tanpa ada data baru, jadi snapshot lama
     #      HARUS gugur.
-    version = "v23"
+    # v24: tiket campaign Collection (COLLECTION_CAMPAIGNS) dikeluarkan dari seluruh
+    #      agregasi Statistics (17 September 2026). Daftar campaign-nya ikut sidik
+    #      jari di bawah, karena mengubah env mengubah isi snapshot tanpa data baru.
+    version = "v24"
     sla = "1" if get_doc_sla_enabled(db) else "0"
     # Sidik jari daftar tersembunyi. WAJIB ikut: tanpa ini snapshot yang sudah
     # ter-cache akan terus menyajikan angka tiket yang baru disembunyikan sampai ada
     # perubahan data lain yang kebetulan menggeser tanda tangannya.
     hidden = ",".join(sorted(h.lower() for h in get_hidden_ticket_ids(db)))
     hidden_key = f"{len(hidden.split(',')) if hidden else 0}:{hashlib.md5(hidden.encode()).hexdigest()[:8]}"
+    from compliance.campaign_kind import collection_campaigns_from_env
+
+    collection = ",".join(sorted(collection_campaigns_from_env()))
+    collection_key = hashlib.md5(collection.encode()).hexdigest()[:8] if collection else "0"
     return (
         f"{version}|{res_count}|{res_up}|{res_done}|{rd_count}|{rd_max}"
-        f"|{ap_count}|{ap_rev}|{sales_key}|sla{sla}|hid{hidden_key}"
+        f"|{ap_count}|{ap_rev}|{sales_key}|sla{sla}|hid{hidden_key}|col{collection_key}"
     )
 
 
@@ -3043,6 +3070,24 @@ def hidden_ticket_filter(query):
         return query
     prefix = func.lower(func.split_part(Result.source_files[0].astext, "_", 1))
     return query.filter(~prefix.in_([h.lower() for h in hidden]))
+
+
+def exclude_collection_campaigns(query):
+    """Keluarkan tiket campaign Collection (``COLLECTION_CAMPAIGNS``) dari query
+    ``Result`` milik permukaan Cashline — dipakai seluruh agregasi Statistics.
+
+    Tiket Collection berformat laporan berbobot dan punya menu sendiri; menghitungnya
+    di Statistics berarti membacanya sebagai tiket Cashline. Env kosong = query
+    dikembalikan apa adanya (perilaku lama)."""
+    from compliance.campaign_kind import collection_campaigns_from_env
+
+    collection = collection_campaigns_from_env()
+    if not collection:
+        return query
+    return query.filter(
+        (Result.campaign.is_(None))
+        | func.lower(func.trim(Result.campaign)).notin_(sorted(collection))
+    )
 
 
 def get_doc_sla_enabled(db: Session) -> bool:

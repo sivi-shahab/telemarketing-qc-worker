@@ -398,15 +398,17 @@ def is_hidden_ticket(ticket_id) -> bool:
 
 
 def exclude_hidden_results(query):
-    """Saring query ``Result`` agar tidak memuat tiket tersembunyi.
+    """Saring query ``Result`` agar tidak memuat tiket tersembunyi — dan, sejak
+    17 September 2026, tiket campaign Collection (``COLLECTION_CAMPAIGNS``).
 
     Satu-satunya tempat ekspresi penyaringnya ditulis untuk sisi agregasi — dipakai
     ``done_results_query`` dan setiap query ``Result`` lain di modul ini yang tidak
-    lewat sana.
+    lewat sana. Karena itu pengecualian Collection ditempel di sini: seluruh query
+    masuk Statistics melewati fungsi ini, jadi satu titik menutup semuanya.
     """
     from db import crud
 
-    return crud.hidden_ticket_filter(query)
+    return crud.exclude_collection_campaigns(crud.hidden_ticket_filter(query))
 
 
 def _parse_submit_datetime(value):
