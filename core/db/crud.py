@@ -2664,11 +2664,20 @@ def _reprocess_item_active_clause():
     disentuh worker tersebut — bahaya yang justru ingin dicegah oleh seluruh
     pemeriksaan ini. Item ``pending`` tidak membawa risiko itu: menurut definisinya
     belum ada yang memegangnya.
+
+    Karena alasan yang sama, ``processing`` juga TIDAK bergantung pada status job.
+    Membatalkan job hanya melewati item ``pending`` (``cancel_reprocess_job``);
+    item ``processing`` dibiarkan selesai, dan worker-nya tetap akan menghapus row
+    lama tiket itu. Sampai 17 September 2026 kedua pemanggil menyaring
+    ``ReprocessJob.status == "running"``, sehingga tiket yang masih diproses oleh
+    job yang dibatalkan tampil siap di-Reprocess/Delete dan lolos pengaman 409.
+    ``pending`` tetap hanya dihitung selagi job-nya ``running``.
     """
     return or_(
         ReprocessJobItem.status == "processing",
         and_(
             ReprocessJobItem.status == "pending",
+            ReprocessJob.status == "running",
             ReprocessJob.created_at >= datetime.now() - REPROCESS_STALE_AFTER,
         ),
     )
@@ -2679,8 +2688,9 @@ def active_reprocess_item_for_ticket(db: Session, ticket_id: str) -> Optional[Re
 
     Pengaman tombol Reprocess di Results: menekan tombol dua kali akan membuat dua
     row baru untuk tiket yang sama, dan job yang kalah cepat mencoba menghapus row
-    yang sudah tidak ada. Job yang sudah ``cancelled`` tidak dihitung — itemnya
-    memang tidak akan dikerjakan.
+    yang sudah tidak ada. Item ``pending`` pada job ``cancelled`` tidak dihitung —
+    itemnya memang tidak akan dikerjakan — tetapi item ``processing``-nya tetap
+    dihitung (lihat :func:`_reprocess_item_active_clause`).
     """
     tid = (ticket_id or "").strip()
     if not tid:
@@ -2691,7 +2701,6 @@ def active_reprocess_item_for_ticket(db: Session, ticket_id: str) -> Optional[Re
         .filter(
             ReprocessJobItem.ticket_id == tid,
             _reprocess_item_active_clause(),
-            ReprocessJob.status == "running",
         )
         .order_by(desc(ReprocessJobItem.id))
         .first()
@@ -2724,7 +2733,6 @@ def active_reprocess_ticket_ids(db: Session, ticket_ids: list) -> set:
         .filter(
             ReprocessJobItem.ticket_id.in_(tids),
             _reprocess_item_active_clause(),
-            ReprocessJob.status == "running",
         )
         .distinct()
         .all()
