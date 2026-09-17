@@ -124,6 +124,11 @@ def _llm_client() -> AzureOpenAI:
         api_key=settings.llm_api_key,
         api_version="2025-04-01-preview",           # terbukti valid dari test curl
         azure_deployment=settings.llm_model,        # "gpt-5.4-mini"
+        # Tanpa ini SDK memakai bawaan 600 detik per percobaan (+2 retry), sehingga
+        # LLM_TIMEOUT tidak berlaku: penilaian transkrip panjang yang butuh >10 menit
+        # dipotong lalu diulang dari awal — pernah 3 percobaan / 1.813 detik untuk
+        # satu tiket (17 September 2026).
+        timeout=settings.llm_timeout,
     )
 
 
