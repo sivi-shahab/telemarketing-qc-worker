@@ -391,33 +391,23 @@ def list_results(
     return items, total
 
 
-def list_collection_results(
+def collection_results_query(
     db: Session,
     *,
     campaigns,
+    uploaded_by_role: Optional[str] = None,
+    exclude_uploaded_by_role: Optional[str] = None,
     status: Optional[str] = None,
-    ai_status: Optional[str] = None,
     ticket_id: Optional[str] = None,
     date_start=None,
     date_end=None,
-    page: int = 1,
-    limit: int = 20,
-    uploaded_by_role: Optional[str] = None,
-    exclude_uploaded_by_role: Optional[str] = None,
 ):
-    """Hasil campaign Collection beserta ``result_json``-nya — HANYA tabel
-    ``results`` + ``result_data``; tidak ada join ke tms_cashline / ascend.
-
-    ``campaigns`` adalah irisan campaign Collection dengan cakupan user; list kosong
-    = tidak ada yang boleh dilihat. ``uploaded_by_role`` / ``exclude_uploaded_by_role``
-    = isolasi upload QC Support, sama artinya dengan di ``list_results`` (lihat
-    ``api.qc_scope.collection_view_scope``). ``ai_status`` (PASS/FAIL) dihitung dari laporan
-    yang dinormalisasi, jadi penyaringnya di Python — volumenya kecil.
-    """
-    from compliance.collection_report import normalize_stored_report
-
+    """Query ``(Result, result_json terbaru)`` tiket Collection dalam cakupan — satu
+    definisi untuk daftar Collection Results DAN Stats Collection, supaya keduanya
+    tidak pernah berbeda pendapat soal tiket mana yang terhitung. ``None`` bila
+    ``campaigns`` kosong (tidak ada yang boleh dilihat)."""
     if not campaigns:
-        return [], 0
+        return None
     # Hanya result_data TERBARU per result (urutan sama dengan ``get_result_data``).
     # Join biasa ke result_data menggandakan baris setiap kali satu tiket punya
     # lebih dari satu evaluasi tersimpan (acks_late / proses ulang).
@@ -471,6 +461,41 @@ def list_collection_results(
         if date_end is not None:
             q = q.filter(series_date <= date_end)
     q = q.order_by(desc(Result.uploaded_at))
+    return q
+
+
+def list_collection_results(
+    db: Session,
+    *,
+    campaigns,
+    status: Optional[str] = None,
+    ai_status: Optional[str] = None,
+    ticket_id: Optional[str] = None,
+    date_start=None,
+    date_end=None,
+    page: int = 1,
+    limit: int = 20,
+    uploaded_by_role: Optional[str] = None,
+    exclude_uploaded_by_role: Optional[str] = None,
+):
+    """Hasil campaign Collection beserta ``result_json``-nya — HANYA tabel
+    ``results`` + ``result_data``; tidak ada join ke tms_cashline / ascend.
+
+    ``campaigns`` adalah irisan campaign Collection dengan cakupan user; list kosong
+    = tidak ada yang boleh dilihat. ``uploaded_by_role`` / ``exclude_uploaded_by_role``
+    = isolasi upload QC Support, sama artinya dengan di ``list_results`` (lihat
+    ``api.qc_scope.collection_view_scope``). ``ai_status`` (PASS/FAIL) dihitung dari laporan
+    yang dinormalisasi, jadi penyaringnya di Python — volumenya kecil.
+    """
+    from compliance.collection_report import normalize_stored_report
+
+    q = collection_results_query(
+        db, campaigns=campaigns, uploaded_by_role=uploaded_by_role,
+        exclude_uploaded_by_role=exclude_uploaded_by_role, status=status,
+        ticket_id=ticket_id, date_start=date_start, date_end=date_end,
+    )
+    if q is None:
+        return [], 0
 
     wanted = ai_status.strip().upper() if isinstance(ai_status, str) and ai_status.strip() else None
     if wanted is None:
@@ -483,6 +508,25 @@ def list_collection_results(
         and normalize_stored_report(rj.get("evaluation"))["ai_status"] == wanted
     ]
     return matched[(page - 1) * limit : page * limit], len(matched)
+
+
+def collection_stats_rows(
+    db: Session,
+    *,
+    campaigns,
+    uploaded_by_role: Optional[str] = None,
+    exclude_uploaded_by_role: Optional[str] = None,
+    date_start=None,
+    date_end=None,
+) -> list:
+    """Seluruh tiket Collection dalam cakupan (semua status, tanpa paginasi) untuk
+    ``compliance.collection_stats.aggregate_collection_stats``."""
+    q = collection_results_query(
+        db, campaigns=campaigns, uploaded_by_role=uploaded_by_role,
+        exclude_uploaded_by_role=exclude_uploaded_by_role,
+        date_start=date_start, date_end=date_end,
+    )
+    return [] if q is None else [(r, rj) for r, rj in q.all()]
 
 
 def list_transcripts(
