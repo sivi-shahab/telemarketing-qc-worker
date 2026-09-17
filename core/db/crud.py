@@ -5,7 +5,7 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from threading import Lock
-from typing import Optional
+from typing import Iterable, Optional
 
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, func, desc, or_
@@ -286,6 +286,7 @@ def list_results(
     uploaded_by_username: Optional[str] = None,
     date_start=None,
     date_end=None,
+    exclude_campaigns: Optional[Iterable[str]] = None,
 ) -> tuple[list[Result], int]:
     # ``customer_ids`` (when not None) scopes results to those customer/ticket ids —
     # used to restrict a sales_agent (Team Leader) to their agents' tickets. An
@@ -325,6 +326,13 @@ def list_results(
         if not campaigns:
             return [], 0
         q = q.filter(func.lower(Result.campaign).in_([c.strip().casefold() for c in campaigns]))
+    if exclude_campaigns:
+        # Campaign Collection punya menu sendiri (format laporan berbobot); tanpa
+        # pengecualian ini tiketnya ikut tampil di Results dan dibaca sebagai Cashline.
+        q = q.filter(
+            (Result.campaign.is_(None))
+            | func.lower(Result.campaign).notin_([c.strip().casefold() for c in exclude_campaigns])
+        )
     if ticket_id:
         # The displayed "ID" is the prefix before the first "_" of the first
         # source filename (see stats._customer_id_from_files), so match that
@@ -381,6 +389,78 @@ def list_results(
         .all()
     )
     return items, total
+
+
+def list_collection_results(
+    db: Session,
+    *,
+    campaigns,
+    status: Optional[str] = None,
+    ai_status: Optional[str] = None,
+    ticket_id: Optional[str] = None,
+    date_start=None,
+    date_end=None,
+    page: int = 1,
+    limit: int = 20,
+):
+    """Hasil campaign Collection beserta ``result_json``-nya — HANYA tabel
+    ``results`` + ``result_data``; tidak ada join ke tms_cashline / ascend.
+
+    ``campaigns`` adalah irisan campaign Collection dengan cakupan user; list kosong
+    = tidak ada yang boleh dilihat. ``ai_status`` (PASS/FAIL) dihitung dari laporan
+    yang dinormalisasi, jadi penyaringnya di Python — volumenya kecil.
+    """
+    from compliance.collection_report import normalize_weighted_report
+
+    if not campaigns:
+        return [], 0
+    q = hidden_ticket_filter(db.query(Result, ResultData.result_json).outerjoin(
+        ResultData, ResultData.result_id == Result.id))
+    q = q.filter(func.lower(Result.campaign).in_([c.strip().casefold() for c in campaigns]))
+    if status:
+        q = q.filter(Result.status == status)
+    if ticket_id:
+        q = q.filter(Result.source_files[0].astext.ilike(f"{ticket_id.strip()}%"))
+    if date_start is not None or date_end is not None:
+        # Basis tanggal yang SAMA dengan ``list_results`` (submit_time snapshot ->
+        # generated_at -> uploaded_at WIB) supaya kedua menu sepakat soal batas hari.
+        submit_date_subq = (
+            db.query(
+                func.to_date(func.left(func.trim(_SUBMIT_TIME_JSON.astext), 10), "YYYY-MM-DD")
+            )
+            .filter(ResultData.result_id == Result.id)
+            .filter(
+                func.trim(func.coalesce(_SUBMIT_TIME_JSON.astext, "")).op("~")(
+                    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}"
+                )
+            )
+            .order_by(desc(ResultData.created_at))
+            .limit(1)
+            .correlate(Result)
+            .scalar_subquery()
+        )
+        series_date = func.coalesce(
+            submit_date_subq,
+            func.date(Result.generated_at),
+            func.date(func.timezone("Asia/Jakarta", func.timezone("UTC", Result.uploaded_at))),
+        )
+        if date_start is not None:
+            q = q.filter(series_date >= date_start)
+        if date_end is not None:
+            q = q.filter(series_date <= date_end)
+    q = q.order_by(desc(Result.uploaded_at))
+
+    wanted = ai_status.strip().upper() if isinstance(ai_status, str) and ai_status.strip() else None
+    if wanted is None:
+        total = q.count()
+        return [(r, rj) for r, rj in q.offset((page - 1) * limit).limit(limit).all()], total
+
+    matched = [
+        (r, rj) for r, rj in q.filter(Result.status == "done").all()
+        if isinstance(rj, dict)
+        and normalize_weighted_report(rj.get("evaluation"))["ai_status"] == wanted
+    ]
+    return matched[(page - 1) * limit : page * limit], len(matched)
 
 
 def list_transcripts(
