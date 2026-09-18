@@ -750,7 +750,9 @@ def annotate_critical_compliance_reasons(evaluation: dict) -> dict:
     requirement on its own (the dashboard used to do that in three separate places,
     and the negation is wrong for the static verification items).
 
-    PASS items get no reason. Non-destructive: returns the original object when there
+    PASS items take the model's own sentence from the scorecard item with the same
+    ``item_code`` (the model never sends a reason on critical check items); None when
+    there is no such item. Non-destructive: returns the original object when there
     is nothing to annotate."""
     if not isinstance(evaluation, dict):
         return evaluation
@@ -760,13 +762,17 @@ def annotate_critical_compliance_reasons(evaluation: dict) -> dict:
     items = ccc.get("checked_items")
     if not isinstance(items, list) or not items:
         return evaluation
+    scorecard_reason = {}
+    for sc in evaluation.get("scorecard_result") or []:
+        if isinstance(sc, dict) and sc.get("item_code"):
+            scorecard_reason[sc["item_code"]] = str(sc.get("reason") or "").strip() or None
     out = []
     for it in items:
         if not isinstance(it, dict):
             out.append(it)
             continue
         if str(it.get("status") or "").strip().upper() == "PASS":
-            out.append({**it, "reason": None})
+            out.append({**it, "reason": scorecard_reason.get(it.get("item_code"))})
             continue
         reason = (static_verification_failure_reason(it.get("item_code"), evaluation)
                   or negate_requirement(it.get("requirement") or ""))
