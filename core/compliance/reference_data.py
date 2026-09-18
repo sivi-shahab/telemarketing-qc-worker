@@ -371,6 +371,17 @@ def build_reference_data(
     # Built last: the instalment row instantiates the RIPLAY formula with this
     # ticket's TMS figures, so it needs the finished cashline_ref.
     tnc_ref = build_tnc_product_reference(riplay_extraction, cashline_ref)
+    # RIPLAY itu opsional, jadi ini warning dan bukan exception. Tapi tanpanya blok TNC
+    # PRODUCT berisi null semua, dan langkah "CEK ENVELOPE — LANGKAH WAJIB" di prompt
+    # ikut batal tanpa jejak: nilai TMS di luar ketentuan produk lolos tanpa tercatat,
+    # baik di "reason" maupun sebagai B03. Satu-satunya gejalanya kolom kosong di layar,
+    # yang membuat kondisi ini pernah bertahan berbulan-bulan tanpa ketahuan.
+    if not riplay_extraction:
+        warnings.append(
+            "campaign ini belum punya riplay_extraction — kolom TnC Product kosong dan "
+            "cek envelope nilai TMS dilewati seluruhnya; upload RIPLAY PDF lewat menu "
+            "Upload Campaign"
+        )
 
     text = (
         "=== CASHLINE REFERENCE DATA ===\n"
