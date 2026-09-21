@@ -272,6 +272,128 @@ def get_result_data(db: Session, result_id: str) -> Optional[ResultData]:
 _SUBMIT_TIME_JSON = ResultData.result_json["reference_data"]["cashline"]["submit_time"]
 
 
+def _series_date_expr(db: Session):
+    """Ekspresi "tanggal tiket" — basis filter tanggal DAN grafik Statistics.
+
+    Diekstrak dari ``list_results`` supaya ``latest_result_date`` memakai ekspresi
+    yang SAMA. Dua salinan pasti menyimpang, dan menyimpangnya tidak berisik:
+    dashboard akan mengisi filter tanggal dengan hari yang justru kosong menurut
+    filternya sendiri.
+
+    Subquery berkorelasi ber-LIMIT 1 (bukan LEFT JOIN) supaya satu ``Result`` tidak
+    bisa terduplikasi oleh beberapa baris ``result_data``; diurutkan ``created_at``
+    desc agar yang terbaca adalah evaluasi TERBARU, konsisten dengan
+    ``result_json_map`` / ``cashline_agent_index``.
+    """
+    submit_date_subq = (
+        db.query(
+            func.to_date(func.left(func.trim(_SUBMIT_TIME_JSON.astext), 10), "YYYY-MM-DD")
+        )
+        .filter(ResultData.result_id == Result.id)
+        .filter(
+            func.trim(func.coalesce(_SUBMIT_TIME_JSON.astext, "")).op("~")(
+                r"^[0-9]{4}-[0-9]{2}-[0-9]{2}"
+            )
+        )
+        .order_by(desc(ResultData.created_at))
+        .limit(1)
+        .correlate(Result)
+        .scalar_subquery()
+    )
+    return func.coalesce(
+        submit_date_subq,
+        func.date(Result.generated_at),
+        func.date(func.timezone("Asia/Jakarta", func.timezone("UTC", Result.uploaded_at))),
+    )
+
+
+def latest_result_date(
+    db: Session,
+    campaigns: Optional[list[str]] = None,
+    customer_ids: Optional[list[str]] = None,
+    uploaded_by_role: Optional[str] = None,
+    exclude_uploaded_by_role: Optional[str] = None,
+    uploaded_by_username: Optional[str] = None,
+    exclude_campaigns: Optional[Iterable[str]] = None,
+):
+    """Tanggal tiket TERBARU yang ada dalam cakupan — ``None`` kalau tidak ada.
+
+    Dipakai ``/list_results/latest_date`` untuk mengisi filter tanggal menu Results
+    saat halaman dibuka. Argumen cakupannya sengaja cermin dari ``list_results``
+    (tanpa filter pilihan user), sehingga tanggal yang dikembalikan dijamin memuat
+    baris kalau dipakai sebagai ``date_start``/``date_end``.
+
+    Satu ``max()`` di SQL — bukan memuat baris lalu mencari maksimumnya di Python,
+    yang justru mengulang beban yang hendak dihilangkan.
+    """
+    if customer_ids is not None and len(customer_ids) == 0:
+        return None
+    if campaigns is not None and not campaigns:
+        return None
+    q = hidden_ticket_filter(db.query(func.max(_series_date_expr(db))))
+    q = _apply_result_scope_filters(
+        q,
+        campaigns=campaigns,
+        customer_ids=customer_ids,
+        uploaded_by_role=uploaded_by_role,
+        exclude_uploaded_by_role=exclude_uploaded_by_role,
+        uploaded_by_username=uploaded_by_username,
+        exclude_campaigns=exclude_campaigns,
+    )
+    return q.scalar()
+
+
+def _apply_result_scope_filters(
+    q,
+    *,
+    campaigns=None,
+    customer_ids=None,
+    uploaded_by_role=None,
+    exclude_uploaded_by_role=None,
+    uploaded_by_username=None,
+    exclude_campaigns=None,
+):
+    """Penyaring CAKUPAN (bukan filter pilihan user) yang dipakai bersama oleh
+    ``list_results`` dan ``latest_result_date``.
+
+    Pemanggil bertanggung jawab menangani "himpunan kosong" (``campaigns == []``
+    atau ``customer_ids == []``) sebelum memanggil ini — keduanya berarti "tidak ada
+    baris yang lolos", dan itu lebih jelas ditulis sebagai short-circuit di
+    pemanggilnya daripada sebagai ``WHERE false``.
+    """
+    if uploaded_by_username is not None:
+        q = q.filter(
+            func.lower(func.trim(Result.uploaded_by_username))
+            == (uploaded_by_username or "").strip().casefold()
+        )
+    if uploaded_by_role is not None:
+        q = q.filter(Result.uploaded_by_role == uploaded_by_role)
+    if exclude_uploaded_by_role is not None:
+        q = q.filter(
+            (Result.uploaded_by_role.is_(None))
+            | (Result.uploaded_by_role != exclude_uploaded_by_role)
+        )
+    if campaigns is not None:
+        # Pembatasan campaign EFEKTIF (bukan filter pilihan user, lihat
+        # ``api.rbac.effective_campaigns_for``): ``None`` = tanpa pembatasan.
+        # Case-insensitive karena nama campaign di ``results`` tersimpan apa adanya
+        # saat upload.
+        q = q.filter(func.lower(Result.campaign).in_([c.strip().casefold() for c in campaigns]))
+    if exclude_campaigns:
+        # Campaign Collection punya menu sendiri (format laporan berbobot); tanpa
+        # pengecualian ini tiketnya ikut tampil di Results dan dibaca sebagai Cashline.
+        q = q.filter(
+            (Result.campaign.is_(None))
+            | func.lower(Result.campaign).notin_([c.strip().casefold() for c in exclude_campaigns])
+        )
+    if customer_ids is not None:
+        # customer_id = prefix before the first "_" of the first source filename.
+        q = q.filter(
+            func.split_part(Result.source_files[0].astext, "_", 1).in_(customer_ids)
+        )
+    return q
+
+
 def list_results(
     db: Session,
     status: Optional[str] = None,
@@ -297,42 +419,26 @@ def list_results(
     # narrows to a single uploader (Team Leader QC's "Semua QC Support" filter).
     if customer_ids is not None and len(customer_ids) == 0:
         return [], 0
+    # List campaign KOSONG = dibatasi ke himpunan kosong sehingga tidak ada baris
+    # yang lolos (``None`` = tanpa pembatasan).
+    if campaigns is not None and not campaigns:
+        return [], 0
     q = db.query(Result)
     # Tiket yang disembunyikan tidak boleh muncul di menu ini — lihat
     # ``hidden_ticket_filter``.
     q = hidden_ticket_filter(q)
-    if uploaded_by_username is not None:
-        q = q.filter(
-            func.lower(func.trim(Result.uploaded_by_username))
-            == (uploaded_by_username or "").strip().casefold()
-        )
-    if uploaded_by_role is not None:
-        q = q.filter(Result.uploaded_by_role == uploaded_by_role)
-    if exclude_uploaded_by_role is not None:
-        q = q.filter(
-            (Result.uploaded_by_role.is_(None))
-            | (Result.uploaded_by_role != exclude_uploaded_by_role)
-        )
+    q = _apply_result_scope_filters(
+        q,
+        campaigns=campaigns,
+        uploaded_by_role=uploaded_by_role,
+        exclude_uploaded_by_role=exclude_uploaded_by_role,
+        uploaded_by_username=uploaded_by_username,
+        exclude_campaigns=exclude_campaigns,
+    )
     if status:
         q = q.filter(Result.status == status)
     if campaign:
         q = q.filter(Result.campaign == campaign)
-    if campaigns is not None:
-        # Pembatasan campaign EFEKTIF (bukan filter pilihan user, lihat
-        # ``api.rbac.effective_campaigns_for``): ``None`` = tanpa pembatasan,
-        # sedangkan list KOSONG = dibatasi ke himpunan kosong sehingga tidak ada
-        # baris yang lolos. Case-insensitive karena nama campaign di ``results``
-        # tersimpan apa adanya saat upload.
-        if not campaigns:
-            return [], 0
-        q = q.filter(func.lower(Result.campaign).in_([c.strip().casefold() for c in campaigns]))
-    if exclude_campaigns:
-        # Campaign Collection punya menu sendiri (format laporan berbobot); tanpa
-        # pengecualian ini tiketnya ikut tampil di Results dan dibaca sebagai Cashline.
-        q = q.filter(
-            (Result.campaign.is_(None))
-            | func.lower(Result.campaign).notin_([c.strip().casefold() for c in exclude_campaigns])
-        )
     if ticket_id:
         # The displayed "ID" is the prefix before the first "_" of the first
         # source filename (see stats._customer_id_from_files), so match that
@@ -353,30 +459,9 @@ def list_results(
         # tidak pernah error (hanya selalu NULL), jadi filter tanggal diam-diam
         # jatuh ke generated_at/uploaded_at dan tidak sejalan dengan grafik.
         #
-        # Tetap subquery berkorelasi ber-LIMIT 1 (bukan LEFT JOIN) supaya satu
-        # Result tidak bisa terduplikasi oleh beberapa baris result_data; diurutkan
-        # created_at desc agar yang terbaca adalah evaluasi TERBARU, konsisten
-        # dengan result_json_map / cashline_agent_index.
-        submit_date_subq = (
-            db.query(
-                func.to_date(func.left(func.trim(_SUBMIT_TIME_JSON.astext), 10), "YYYY-MM-DD")
-            )
-            .filter(ResultData.result_id == Result.id)
-            .filter(
-                func.trim(func.coalesce(_SUBMIT_TIME_JSON.astext, "")).op("~")(
-                    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}"
-                )
-            )
-            .order_by(desc(ResultData.created_at))
-            .limit(1)
-            .correlate(Result)
-            .scalar_subquery()
-        )
-        series_date = func.coalesce(
-            submit_date_subq,
-            func.date(Result.generated_at),
-            func.date(func.timezone("Asia/Jakarta", func.timezone("UTC", Result.uploaded_at))),
-        )
+        # Ekspresinya dibagi dengan ``latest_result_date`` — lihat
+        # ``_series_date_expr``.
+        series_date = _series_date_expr(db)
         if date_start is not None:
             q = q.filter(series_date >= date_start)
         if date_end is not None:
