@@ -107,7 +107,8 @@ ERROR_CODES = {
         "error_category": "TnC Product",
         "source": SOURCE_SCORECARD,
         "trigger": ("Item BELUM_SESUAI di kategori Penjelasan Mega Cashline, "
-                    "Final Konfirmasi Mega Cashline, atau Final Konfirmasi Mega Ultima Shield"),
+                    "Final Konfirmasi Mega Cashline, Penjelasan Mega Ultima Shield, "
+                    "atau Final Konfirmasi Mega Ultima Shield"),
         "risk_base": "M",
     },
     "B11": {
@@ -235,6 +236,25 @@ ERROR_CODES = {
         "trigger": "Ucapan agent bersentimen negatif kepada nasabah (badword_check)",
         "risk_base": "M",
     },
+    # Ditambahkan 18 September 2026, mengikuti sheet Error Reason bank 17 September
+    # 2026 (kode baru pertama sejak B27/B28 pada 28 Agustus 2026). SC_CL_2
+    # BELUM_SESUAI kini dinilai LLM sepenuhnya (lihat ``worker.tasks.process_transcript``
+    # blok "AGENT REFERENCE DATA"); Python hanya membedakan B12 vs B29 berdasarkan
+    # field top-level ``evaluation["agent_name_said"]`` yang diisi LLM sendiri — non-
+    # kosong berarti SUATU nama benar-benar disebut (tapi tidak cocok NAME ONLINE) ->
+    # B29, kosong/null berarti "agent sama sekali tidak menyebutkan nama" -> tetap B12
+    # lewat derivasi kategori Greeting biasa (``category_error_code``). Lihat bagian
+    # 1b di ``build_error_code_table``.
+    "B29": {
+        "desc": "Penggunaan nama online tidak sesuai dengan list terdaftar",
+        "error_type": "Error - Human",
+        "error_category": "TnC Product",
+        "source": SOURCE_SCORECARD,
+        "trigger": ("SC_CL_2 BELUM_SESUAI dengan evaluation['agent_name_said'] terisi "
+                    "(agent menyebut SUATU nama tetapi tidak sesuai NAME ONLINE roster, "
+                    "bukan \"tidak menyebutkan nama sama sekali\")"),
+        "risk_base": "L",
+    },
     # Salah jenis dokumen (14 Agustus 2026): berkasnya DATANG, hanya bukan jenis yang
     # diminta — mis. KTP diunggah ke slot NPWP.
     #
@@ -309,10 +329,24 @@ _VERIFICATION_CODES = {"B02", "B03", "B05", "B17"}
 
 # Scorecard categories whose unmet (BELUM_SESUAI) items are surfaced as a derived
 # error code, keyed to each item's own item_code.
+#
+# "Penjelasan Mega Ultima Shield" ditambahkan 18 September 2026 — sebelumnya hilang
+# dari daftar ini walau "Penjelasan Mega Cashline" (analognya di produk Cashline) dan
+# "Final Konfirmasi Mega Ultima Shield" (fase lain produk MUS yang sama) sudah ada.
+# Akibatnya item BELUM_SESUAI di kategori ini (SC_CL_17-22) TIDAK PERNAH menerbitkan
+# error code apa pun — baik lewat jalur ini maupun ``evaluation.get("error_codes")``
+# (LLM tidak selalu menuliskannya sendiri) — sehingga kegagalannya tetap memotong skor
+# tapi lenyap dari tabel Error Code DAN dari tally Risk Base (Total Failure di tab
+# Failure Rate). Ketahuan dari tiket ``031023oEZg``: SC_CL_22 BELUM_SESUAI &
+# tolerable=NO, skor 115.95 < passing 121.95 (Not Qualified benar), tetapi satu-satunya
+# baris Risk Base yang terbit adalah SC_CL_2 (Greeting, B12, L, tolerable=YES) — kena
+# pengecualian L-tolerable di ``top_risk_base`` sehingga tiket ini tidak menyumbang H,
+# M, L, N, ATAUPUN O sama sekali, padahal jelas Not Qualified karena sebab lain.
 CATEGORY_ERROR_CODES = [
     {"categories": [
         "Penjelasan Mega Cashline",
         "Final Konfirmasi Mega Cashline",
+        "Penjelasan Mega Ultima Shield",
         "Final Konfirmasi Mega Ultima Shield",
     ], "code": "B10"},
     {"categories": ["Greeting"], "code": "B12"},
@@ -329,7 +363,7 @@ CATEGORY_ERROR_CODES = [
 # Error Reason bank. Keduanya Risk Base "M", jadi begitu muncul ia IKUT menaikkan
 # Total Failure & Failure Rate — itu memang yang dimaksud, bukan efek samping.
 ALLOWED_ERROR_CODES = {"B02", "B03", "B05", "B09", "B10", "B12", "B16",
-                       "B17", "B18", "B27", "B28", "C03"}
+                       "B17", "B18", "B27", "B28", "B29", "C03"}
 
 
 def is_allowed_error_code(code: str) -> bool:
@@ -1058,8 +1092,8 @@ def merge_dynamic_verification_rows(rows: list) -> list:
     **HANYA UNTUK TAMPILAN.** Dipanggil di permukaan yang MENAMPILKAN tabel Error Code
     (detail tiket, Agent Error Summary, ekspor XLSX), TIDAK di dalam
     ``build_error_code_table``. Alasannya: keluaran builder itu juga menjadi bahan
-    ``risk_base_tally``, yang menghitung PELANGGARAN per baris — melebur di sana
-    berarti diam-diam memotong Total Failure dan Failure Rate.
+    penghitungan lain yang bekerja per baris (mis. Ringkasan Kategori) — melebur
+    di sana berarti diam-diam mengecilkan hitungan itu.
     """
     dyn_labels = {titleize_field(f) for f in CARD_HOLDER_DYNAMIC_FIELDS}
 
@@ -1204,11 +1238,23 @@ def build_error_code_table(evaluation: dict) -> list:
             add(SOURCE_SCORECARD, code, None, reason, ev_text, ticket_id, details,
                 timestamp=ev_ts, evidence_quote=ev_quote)
 
-    # --- 1b) Scorecard: derived B10/B12/B18 from BELUM_SESUAI items ---
+    # --- 1b) Scorecard: derived B10/B12/B18/B29 from BELUM_SESUAI items ---
     for item in evaluation.get("scorecard_result") or []:
         if (item or {}).get("status") != "BELUM_SESUAI":
             continue
-        code = category_error_code((item or {}).get("category"))
+        # ``error_code_override``: hook generik untuk item yang butuh kode berbeda
+        # dari derivasi kategori biasa. Menang atas ``category_error_code`` bila ada
+        # (tidak ada pemanggil aktif saat ini — dipertahankan untuk kasus serupa
+        # nanti, lihat riwayat B29 di bawah).
+        code = (item or {}).get("error_code_override") or category_error_code((item or {}).get("category"))
+        # SC_CL_2 (Greeting — nama on-air, 18 September 2026): B12 (default kategori
+        # Greeting) berarti "agent sama sekali tidak menyebutkan nama"; B29 berarti
+        # "menyebut SUATU nama tetapi tidak sesuai NAME ONLINE". Dulu dibedakan lewat
+        # deteksi regex Python (``call_ownership.apply_agent_name_verdict``, terbukti
+        # rapuh — tiket 020455CL3A) — sekarang dibedakan dari ``agent_name_said``
+        # yang diisi LLM sendiri (non-kosong = ada nama disebut = B29).
+        if (item or {}).get("item_code") == "SC_CL_2" and (evaluation.get("agent_name_said") or "").strip():
+            code = "B29"
         if not code:
             continue
         evidence = item.get("evidence") or {}
@@ -1444,9 +1490,8 @@ def build_error_code_table(evaluation: dict) -> list:
 
     # Penggabungan B16 / B17-dinamis SENGAJA TIDAK dilakukan di sini — lihat
     # ``merge_dynamic_verification_rows``. Fungsi ini adalah sumber baris untuk
-    # PENGHITUNGAN (risk base per pelanggaran di ``risk_base_tally``), bukan hanya
-    # untuk tampilan; meleburnya di sini akan diam-diam mengecilkan Total Failure —
-    # pada korpus 98 tiket, dari 114 menjadi 104.
+    # penghitungan per baris lain (mis. Ringkasan Kategori), bukan hanya untuk
+    # tampilan; meleburnya di sini akan diam-diam mengecilkan hitungan itu.
     return rows
 
 

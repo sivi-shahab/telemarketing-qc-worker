@@ -61,9 +61,13 @@ from compliance.static_similarity import levenshtein
 NAME_MATCH_MIN = 75.0
 
 # Jangkar perkenalan: "... dari Bank Mega" / "... dari Pusat Informasi Bank Mega".
-# Nama agent adalah 1-2 kata TEPAT SEBELUM jangkar itu.
+# Nama agent adalah 1-2 kata TEPAT SEBELUM jangkar itu. Satu vokatif sisipan
+# ("Ibu"/"Pak"/dst.) boleh berdiri di ANTARA nama dan "dari" (18 September 2026,
+# tiket 020455CL3A: "...saya Eveline, Ibu dari Bank Mega..." — tanpa toleransi ini
+# pemangkasan mundur berhenti di "Ibu" (stopword) sebelum sampai ke "Eveline").
 _INTRO_ANCHOR = re.compile(
-    r"([A-Za-z'’.\- ]{2,40}?)\s*,?\s+dari\s+(?:pusat\s+informasi\s+)?bank\s*mega",
+    r"([A-Za-z'’.\- ]{2,40}?)\s*,?\s*(?:(?:bapak|ibu|pak|bu|mbak|mas|kak)\s*,?\s*)?"
+    r"dari\s+(?:pusat\s+informasi\s+)?bank\s*mega",
     re.IGNORECASE,
 )
 # Pola cadangan tanpa jangkar "dari Bank Mega": "nama saya X", "saya X di sini".
@@ -86,6 +90,11 @@ _STOPWORDS = {
     "selamat", "pagi", "siang", "sore", "malam", "dan", "atau", "di", "ke", "nya",
     "betul", "benar", "baik", "maaf", "izin", "ijin", "mohon", "nama", "eh", "ee",
     "sini", "gimana", "bagaimana", "apa", "yang", "untuk", "atas", "kami", "kita",
+    # "dari" (18 September 2026): disfluensi ASR umum ("...fasilitas dari, dari Bank
+    # Mega...") membuat KATA "dari" ITU SENDIRI tertangkap sebagai kandidat nama —
+    # persis kata kunci jangkarnya sendiri. Tiket 020455CL3A: `detect_agent_names`
+    # mengembalikan ``["dari"]`` alih-alih nama sungguhan yang ada di kalimat lain.
+    "dari",
 }
 
 
@@ -246,6 +255,32 @@ _ROLE_INTRO = re.compile(
 # tertukar; memperlebarnya hanya menambah kebisingan tengah panggilan.
 _ROLE_OPENING_SEGMENTS = 8
 
+# CADANGAN untuk PANGGILAN SUSULAN (18 September 2026). ``_ROLE_INTRO`` hanya mengenal
+# perkenalan panggilan PERTAMA ("perkenalkan saya X dari Bank Mega"). Panggilan susulan
+# dibuka lain: "Pak Lordi, dengan Tamara KEMBALI yang kemarin menghubungi Bapak" —
+# tanpa "dari Bank Mega", tanpa "perkenalkan", tanpa "nama saya". Pada berkas seperti
+# itu ``hits`` kosong dan fungsi menyerah, sehingga label yang tertukar dibiarkan.
+#
+# Sampai 217-PDF korpus kalibrasi awal hal itu tidak berbahaya: berkas yang tidak punya
+# perkenalan terbaca SELURUHNYA memang sudah berlabel benar. Batch multi-rekaman 18
+# September 2026 memunculkan lawannya — ``010445fAVG`` [2] tidak punya perkenalan
+# terbaca DAN labelnya tertukar. Itu bukan kebetulan: panggilan susulan justru bentuk
+# yang paling mungkin dibuka dengan "...kembali", jadi celah ini berkorelasi persis
+# dengan kasus multi-rekaman.
+#
+# Yang dicari: kalimat yang HANYA diucapkan agent, di SELURUH panggilan (bukan cuma
+# pembukaan) — panggilan susulan tetap menjalankan skrip walau pembukanya tidak baku.
+# Sengaja frasa PERAN, bukan kata sapaan: "Bapak/Ibu" dipakai kedua pihak.
+_ROLE_SCRIPT = re.compile(
+    r"izin\s+minta\s+waktu|minta\s+waktunya\s+sebentar"
+    r"|\bdengan\s+\w+\s+kembali\b"
+    r"|boleh\s+dibantu\s+ulang|dibantu\s+ulang\s+kembali|saya\s+ulangi\s+kembali"
+    r"|kami\s+informasikan|perlu\s+kami\s+informasikan"
+    r"|terima\s+kasih\s+atas\s+waktunya"
+    r"|apakah\s+(?:bapak|ibu)\s+setuju",
+    re.IGNORECASE,
+)
+
 
 def _role_kind(label) -> "str | None":
     """``"agent"`` / ``"customer"`` / None untuk sebuah label pembicara.
@@ -297,6 +332,13 @@ def fix_speaker_roles(segments) -> list:
     for seg in segments[:_ROLE_OPENING_SEGMENTS]:
         if _ROLE_INTRO.search(str((seg or {}).get("text") or "")):
             hits[(seg or {}).get("speaker")] += 1
+    if not hits:
+        # Tidak ada perkenalan terbaca — coba frasa SKRIP agent di seluruh panggilan
+        # (panggilan susulan; lihat ``_ROLE_SCRIPT``). Tetap tunduk pada syarat yang
+        # sama di bawah: seri tidak diputuskan, dan label yang sudah benar dibiarkan.
+        for seg in segments:
+            if _ROLE_SCRIPT.search(str((seg or {}).get("text") or "")):
+                hits[(seg or {}).get("speaker")] += 1
     if not hits:
         return segments
     ranked = hits.most_common()
@@ -431,50 +473,64 @@ def agent_name_verdict(pdf_texts: dict, name_online: str, roster_names=(),
                                      f"membuka percakapan."}
 
 
-# Item scorecard yang mewajibkan agent menyebut nama agent.
-AGENT_NAME_ITEM = "SC_CL_2"
+# ``apply_agent_name_verdict`` (paksa SC_CL_2 lewat kode berdasar ``detect_agent_names``)
+# DIHAPUS 18 September 2026 — tiket 020455CL3A: agent memperkenalkan diri "izin saya
+# Eveline, Ibu dari Bank Mega", LLM sudah BENAR mengutip kalimat itu dan menilai
+# SESUAI, tapi override kode menimpanya jadi BELUM_SESUAI dengan alasan generik
+# "tidak ditemukan di transkrip" karena regex jangkar `detect_agent_names` gagal
+# menangkap "Eveline" (vokatif "Ibu" tersisip antara nama dan "dari") dan malah
+# menangkap kata "dari" itu sendiri dari disfluensi ASR di kalimat lain. LLM yang
+# membaca transkrip UTUH sudah membuktikan lebih akurat daripada regex ekstraksi
+# nama dari ucapan bebas. SC_CL_2 sekarang dinilai LLM sepenuhnya seperti item
+# scorecard lainnya, dibantu blok "AGENT REFERENCE DATA" (NAME ONLINE) yang
+# disuntikkan ke prompt — lihat KB_CL_2.scoring_rule dan
+# ``worker.tasks.process_transcript`` (blok referensi agent). B12 vs B29 kini
+# diturunkan dari field ``evaluation["agent_name_said"]`` yang diisi LLM sendiri —
+# lihat ``error_codes.py`` bagian 1b.
+#
+# ``agent_name_verdict()`` di atas TETAP dipakai — bukan untuk menimpa skor, tapi
+# sebagai info diagnostik (``result_json.agent_name_check``) dan oleh
+# ``filter_calls_by_agent`` (kepemilikan panggilan, lihat docstring modul ini).
 
 
-def apply_agent_name_verdict(evaluation: dict, verdict: dict) -> dict:
-    """Turunkan ``SC_CL_2`` bila nama yang disebut agent tidak sesuai NAME ONLINE.
+def stamp_agent_name_reason(evaluation: dict, name_online) -> dict:
+    """Tulis alasan SC_CL_2 yang menyebut KEDUA nama saat error code-nya B29.
 
-    Aturan bisnis 7 September 2026, dikonfirmasi Bank Mega: perkenalan agent WAJIB
-    memakai nama on-air. Menyebut nama asli, nama on-air orang lain, atau tidak
-    menyebutkan nama yang terdaftar sama-sama menggagalkan item ini.
+    B29 = agent SEBUT nama, tetapi berbeda dengan NAME ONLINE roster (lihat
+    ``error_codes.py`` bagian 1b; kuncinya ``evaluation["agent_name_said"]`` terisi).
+    Alasan yang ditulis LLM untuk kasus ini ("tidak menyebut nama yang cocok dengan
+    Ascend pada perkenalan") tidak memuat nama mana pun, sehingga pembacanya harus
+    membuka transkrip dan roster untuk tahu siapa yang salah sebut apa. Kedua nama
+    sudah ada di tangan kode, jadi alasannya disusun DETERMINISTIK — bukan diminta
+    ke LLM, yang bisa menuliskannya sedikit berbeda tiap kali:
 
-    Ditegakkan di KODE, bukan lewat prompt, karena LLM tidak pernah melihat roster —
-    NAME ONLINE hanya ada di database sales, dan meminta model menghafalnya berarti
-    menyerahkan vonis pada tebakan.
+        Agent tidak menyebutkan nama yang cocok pada perkenalan (nama on-air LINA,
+        yang disebut Eveline).
 
-    HANYA MENURUNKAN. ``verdict["match"] is True`` tidak pernah menaikkan status: LLM
-    bisa saja menjatuhkan SC_CL_2 karena sebab lain (mis. nama disebut tetapi bukan di
-    segmen pembuka), dan itu penilaian yang tidak boleh ditimpa dari sini.
-    ``match is None`` (agent tidak ada di roster) juga tidak mengubah apa pun —
-    ketiadaan data roster bukan kesalahan agent.
+    Dipanggil SEBELUM ``recording_type.stamp_reason_provenance``, yang menambahkan
+    "- Evidence diambil dari recording utama." di belakangnya. ``name_online`` kosong
+    (agent tidak ada di roster) tetap menghasilkan kalimat, dengan keterangan itu
+    sebagai ganti nama on-air.
 
-    ``point_of_improvement`` (14 September 2026) juga ditulis ulang di sini, sejalan
-    dengan item lain yang gagal lewat kode (bukan lewat LLM) — tanpa ini kolom Point
-    of Improvement di dashboard akan kosong padahal item-nya BELUM_SESUAI, karena
-    field itu murni hasil generate LLM dan override kode ini tidak pernah lewat LLM.
-
-    Cakupannya SELURUH rekaman yang dinilai, sesuai aturan KB untuk kategori Greeting:
-    "terpenuhi di panggilan MANA PUN (cukup SATU kali) -> SESUAI".
+    Hanya menyentuh baris SC_CL_2 berstatus BELUM_SESUAI — kondisi yang sama dengan
+    yang menerbitkan B29. B12 (agent tidak menyebut nama sama sekali) tidak disentuh.
+    Non-destruktif: bila tidak ada yang berubah, objek asli dikembalikan.
     """
-    if not evaluation or (verdict or {}).get("match") is not False:
+    disebut = str((evaluation or {}).get("agent_name_said") or "").strip()
+    rows = (evaluation or {}).get("scorecard_result")
+    if not disebut or not isinstance(rows, list):
         return evaluation
-    rows = evaluation.get("scorecard_result")
-    if not isinstance(rows, list):
-        return evaluation
-    out, ubah = [], False
+    on_air = str(name_online or "").strip()
+    asal = f"nama on-air {on_air}" if on_air else "nama on-air tidak tersedia di roster"
+    alasan = (f"Agent tidak menyebutkan nama yang cocok pada perkenalan "
+              f"({asal}, yang disebut {disebut}).")
+    out, berubah = [], False
     for row in rows:
         r = row if isinstance(row, dict) else {}
-        if r.get("item_code") != AGENT_NAME_ITEM or r.get("status") == "BELUM_SESUAI":
-            out.append(row)
-            continue
-        out.append({**r, "status": "BELUM_SESUAI", "item_score": 0,
-                    "reason": verdict.get("reason") or
-                              "Nama yang disebut agent tidak sesuai NAME ONLINE.",
-                    "point_of_improvement": verdict.get("point_of_improvement") or
-                              "Sebutkan nama on-air yang benar sesuai database sales."})
-        ubah = True
-    return {**evaluation, "scorecard_result": out} if ubah else evaluation
+        if r.get("item_code") == "SC_CL_2" and str(r.get("status") or "").upper() == "BELUM_SESUAI":
+            if r.get("reason") != alasan:
+                out.append({**r, "reason": alasan})
+                berubah = True
+                continue
+        out.append(row)
+    return {**evaluation, "scorecard_result": out} if berubah else evaluation

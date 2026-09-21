@@ -378,6 +378,33 @@
     "label": "B26 — Legal Statement Bersyarat"
   },
   {
+    "code": "B27",
+    "error_type": "Error - Human",
+    "category": "Offering bukan kepada CH",
+    "risk_base": "M",
+    "campaign": "All Campaign",
+    "details": "Offering bukan kepada Nasabah terundang",
+    "label": "B27 — Offering bukan kepada Nasabah terundang"
+  },
+  {
+    "code": "B28",
+    "error_type": "Error - Human",
+    "category": "Inappropriate Language",
+    "risk_base": "M",
+    "campaign": "All Campaign",
+    "details": "Melakukan penawaran dengan kata atau kalimat tidak sopan, sarkas, tidak pantas dan bersifat menyinggung.",
+    "label": "B28 — Melakukan penawaran dengan kata atau kalimat tidak sopan, sarkas, tid…"
+  },
+  {
+    "code": "B29",
+    "error_type": "Error - Human",
+    "category": "TnC Product",
+    "risk_base": "L",
+    "campaign": "All Campaign",
+    "details": "Penggunaan nama online tidak sesuai dengan list terdaftar",
+    "label": "B29 — Penggunaan nama online tidak sesuai dengan list terdaftar"
+  },
+  {
     "code": "C01",
     "error_type": "Error - Customer",
     "category": "Cancel by Customer",

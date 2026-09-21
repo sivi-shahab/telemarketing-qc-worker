@@ -195,6 +195,7 @@ def evaluate(
     reasoning_effort: str | None = None,
     return_usage: bool = False,
     reference_text: str = "",
+    required_keys: list[str] | None = None,
 ):
     """Run a single LLM evaluation of the transcript against the campaign config.
 
@@ -207,6 +208,17 @@ def evaluate(
     model's reasoning budget. If the response can't be parsed as a JSON object,
     the call is retried up to ``max_retries`` times
     (total attempts = ``max_retries + 1``).
+
+    ``required_keys`` (optional) names top-level keys the parsed JSON must
+    contain — e.g. ``["cashline_data_verification", "card_holder_verification"]``
+    when the caller already confirmed matching reference rows exist for this
+    ticket. A response that parses fine as JSON but is missing one of these keys
+    is treated the same as an unparseable response: it is retried, then raises
+    after the same ``max_retries`` budget. This guards against the LLM silently
+    dropping whole mandatory sections while still returning otherwise-valid JSON
+    (case seen on ticket 030226vUJS, 18 September 2026 — reference data was
+    complete, but the model's response never included the four Task B/C/D keys,
+    and a JSON-parseability check alone let it through as ``status=done``).
 
     Returns the parsed JSON object produced by the LLM. If ``return_usage`` is
     True, returns ``(evaluation, usage)`` instead, where ``usage`` is
@@ -245,12 +257,18 @@ def evaluate(
         except ValueError as exc:
             last_error = exc
             continue
+        missing_keys = [k for k in (required_keys or []) if k not in evaluation]
+        if missing_keys:
+            last_error = ValueError(
+                f"LLM response valid JSON but missing required key(s): {missing_keys}"
+            )
+            continue
         if return_usage:
             return evaluation, _extract_usage(response)
         return evaluation
 
     raise ValueError(
-        f"LLM did not return parseable JSON after {max_retries + 1} attempts: {last_error}"
+        f"LLM did not return a complete evaluation after {max_retries + 1} attempts: {last_error}"
     )
 
 

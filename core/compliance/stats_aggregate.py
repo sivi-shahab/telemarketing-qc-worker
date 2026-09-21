@@ -150,37 +150,6 @@ def top_risk_base(rows, evaluation=None) -> "str | None":
     return top
 
 
-def risk_base_tally(rows, evaluation=None) -> dict:
-    """Hitung SEMUA risk base sebuah tiket — bukan hanya yang tertinggi.
-
-    Dipakai pohon **Hierarki Failure Rate** (28 Agustus 2026). Di tabel itu kolom
-    High/Medium/Low menghitung **PELANGGARAN**, bukan tiket: satu tiket yang
-    melanggar empat hal berat menyumbang 4 ke High, bukan 1. Konsekuensinya
-    ``Total Failure`` BISA melebihi jumlah tiket Not Qualified — itu memang yang
-    diminta, karena bobot sebuah tiket dengan 5 pelanggaran memang bukan 1.
-
-    Bedakan dari ``top_risk_base``, yang TETAP dipakai Performa Campaign dan KPI
-    Overview: di sana satu tiket = paling banyak satu hitungan.
-
-    Pengecualian L-tolerable diterapkan PER BARIS di sini: baris ``L`` yang menempel
-    pada item scorecard ``tolerable = YES`` tidak dihitung — alasannya sama dengan
-    ``top_risk_base``, sistem sendiri memaafkan pelanggaran itu.
-
-    Pemanggil bertanggung jawab menerapkan ``override_risk_base_for_new_joiner``
-    lebih dulu bila perlu, persis seperti ``top_risk_base``.
-    """
-    tally = {k: 0 for k in _RISK_PRIORITY}
-    tolerable = _tolerable_item_codes(evaluation)
-    for row in rows or []:
-        rb = (row or {}).get("risk_base") or "O"
-        if rb not in _RISK_PRIORITY:
-            rb = "O"
-        if rb == "L" and str((row or {}).get("item_code") or "") in tolerable:
-            continue
-        tally[rb] += 1
-    return tally
-
-
 def _rate_of(risk: dict, submissions: int) -> float:
     """Error Rate = Total Risk (H+M+L) ÷ Submission.
 
@@ -192,21 +161,17 @@ def _rate_of(risk: dict, submissions: int) -> float:
     2026 tiap tabel punya definisinya sendiri atas permintaan bisnis:
       * Performa Sales     -> Not Qualified ÷ Submission  (``_rate``)
       * Performa Campaign  -> Total Risk ÷ tiket Not Qualified (``_rate``)
-      * Hierarki           -> tetap fungsi ini, TAPI akumulator yang disuapkan
-        hanya berisi risk base milik tiket Not Qualified, dan menghitung SEMUA
-        risk base tiap tiket (``risk_base_tally``), bukan satu yang tertinggi.
+      * Hierarki           -> tetap fungsi ini, dengan akumulator yang hanya
+        berisi risk base milik tiket Not Qualified.
     Jadi angka ketiga tabel itu memang tidak lagi saling sebanding begitu saja.
 
-    RASIONYA BISA MELEWATI 100% dan itu benar. Kalimat lama di sini ("tiap tiket
-    menyumbang paling banyak 1 ke H/M/L, jadi rasionya selalu <= 100%") sudah tidak
-    berlaku sejak pembilangnya pindah ke ``risk_base_tally``: satu tiket Not Qualified
-    menyumbang SEMUA risk base-nya, sementara penyebutnya jumlah transkrip. Tiket
-    ``160908U5GK`` misalnya menyumbang 11 risk base atas 2 transkrip (550%).
-
-    Yang di atas 100% DIBATASI SAAT DITAMPILKAN menjadi "100%+" (``rateText`` di
-    StatsView.vue, permintaan bisnis 31 Agustus 2026). Pembatasan itu murni tampilan —
-    angka yang dikembalikan fungsi ini tetap apa adanya, karena pengurutan dan
-    pewarnaan masih membutuhkan nilai sebenarnya.
+    Sejak 17 September 2026, pembilang Hierarki kembali memakai SATU risk base
+    tertinggi per tiket (``top_risk_base``, persis KPI Overview) alih-alih menally
+    semua pelanggaran per baris. Konsekuensinya ``Total Failure`` tidak pernah
+    melebihi jumlah tiket Not Qualified, dan penyebutnya (jumlah transkrip) selalu
+    >= jumlah tiket — jadi rasio ini tidak pernah melewati 100%. (Sempat, 28
+    Agustus-17 September 2026, pembilangnya menally SEMUA risk base per tiket
+    sehingga rasionya bisa melewati 100%; itu dibatalkan atas permintaan bisnis.)
 
     Sengaja TIDAK dipakai di: tabel Daftar QC (mengukur beban & hasil kerja QC,
     bukan kesalahan sales), breakdown Manual Status (vonis human tidak punya risk
@@ -1316,14 +1281,27 @@ def compute_failure_reasons(db, campaign: str = None, campaigns: list = None) ->
     Untuk setiap result 'done' yang evaluable DAN Not Qualified (dengan banding yang
     di-approve sudah diterapkan), ambil item scorecard berstatus BELUM_SESUAI,
     kelompokkan per ``category``. Per kategori dihitung:
-      - ``fail_count``  : JUMLAH TIKET yang punya >=1 item gagal di kategori itu;
-      - ``pct``         : fail_count / jumlah tiket Not Qualified * 100;
-      - ``top_reasons`` : requirement item yang paling sering gagal (+ contoh reason).
+      - ``fail_count``  : TOTAL KEMUNCULAN item gagal di kategori itu — SAMA DENGAN
+        jumlah seluruh ``top_reasons[].count``-nya (18 September 2026; sebelumnya
+        dedup per tiket, sehingga 1 tiket yang gagal di 2 requirement berbeda dalam
+        kategori yang sama hanya menyumbang +1, dan pembaca bingung kenapa "Failure"
+        kategori itu lebih kecil dari total breakdown reason-nya — permintaan bisnis
+        supaya "Failure" langsung terbaca sebagai total dari breakdown-nya, tanpa
+        perlu menjumlah manual);
+      - ``pct``         : fail_count / jumlah tiket Not Qualified * 100 — SEKARANG
+        BISA >100% (satu tiket bisa menyumbang lebih dari satu ke fail_count bila
+        gagal di beberapa requirement dalam kategori yang sama). Field ini tidak
+        dipakai tabel "Kategori Scorecard yang Sering Gagal" di dashboard (hanya
+        dikirim untuk kompatibilitas payload lama);
+      - ``top_reasons`` : SELURUH requirement yang gagal di kategori itu (tidak lagi
+        dipotong ke 3 teratas — 18 September 2026, supaya angka "Failure" SELALU
+        persis sama dengan penjumlahan seluruh baris reason yang tampil di layar,
+        untuk kategori manapun).
     Diurutkan menurun berdasarkan fail_count. Cakupan GLOBAL (semua tiket), kecuali
     bila ``campaign`` diisi — dipakai filter campaign di tab Failure Reason — dan/atau
     ``campaigns`` (batas campaign role, lihat ``done_results_query``).
-    ``total_evaluated`` dan ``pct`` ikut mengecil mengikuti filternya, sehingga
-    persentasenya tetap relatif terhadap tiket yang benar-benar ditampilkan.
+    ``total_evaluated`` ikut mengecil mengikuti filternya, sehingga populasi acuannya
+    tetap relatif terhadap tiket yang benar-benar ditampilkan.
 
     ``not_qualified`` — jumlah tiket AI Status FAIL, definisi yang SAMA dengan KPI
     di Overview. Sejak cakupannya dipersempit, angkanya identik dengan
@@ -1353,7 +1331,6 @@ def compute_failure_reasons(db, campaign: str = None, campaigns: list = None) ->
     total_eval = 0
     total_submissions = 0                              # SELURUH tiket evaluable (penyebut konteks)
     not_qualified = 0
-    cat_fail_tickets: dict = defaultdict(int)          # category -> jumlah tiket gagal
     cat_reason_counts: dict = defaultdict(lambda: defaultdict(int))  # category -> requirement -> n
     cat_reason_example: dict = defaultdict(dict)       # category -> requirement -> contoh reason
     doc_map = document_status_map(db, done_results)
@@ -1386,16 +1363,16 @@ def compute_failure_reasons(db, campaign: str = None, campaigns: list = None) ->
             cat_reason_counts[cat][req] += 1
             if reason and req not in cat_reason_example[cat]:
                 cat_reason_example[cat][req] = reason
-        for cat in {c for c, _req, _reason in failures}:
-            cat_fail_tickets[cat] += 1
 
     categories = []
-    for cat, fails in cat_fail_tickets.items():
-        top = sorted(cat_reason_counts[cat].items(), key=lambda kv: kv[1], reverse=True)[:3]
+    for cat, reasons in cat_reason_counts.items():
+        # ``fail_count`` = TOTAL kemunculan (SUM seluruh requirement), bukan lagi
+        # jumlah tiket unik — lihat catatan definisi di docstring fungsi ini.
+        top = sorted(reasons.items(), key=lambda kv: kv[1], reverse=True)
         categories.append({
             "category": cat,
-            "fail_count": fails,
-            "pct": _rate(fails, total_eval),
+            "fail_count": sum(reasons.values()),
+            "pct": _rate(sum(reasons.values()), total_eval),
             "top_reasons": [
                 {
                     "requirement": req,
@@ -1422,7 +1399,6 @@ def compute_failure_reasons(db, campaign: str = None, campaigns: list = None) ->
 # dihitung ulang per simpul hierarki, bukan dipecah dari angka global.
 
 _FAIL_TOP_CATEGORIES = 5  # kategori teratas yang dikirim per simpul
-_FAIL_TOP_REASONS = 3     # requirement teratas per kategori
 
 
 # Nama kategori scorecard yang diperjelas saat DITAMPILKAN. Kategori "Verifikasi"
@@ -1573,7 +1549,6 @@ def _new_fail_acc() -> dict:
     return {
         "evaluated": 0,
         "fail_tickets": 0,
-        "cat_tickets": defaultdict(int),
         "cat_reqs": defaultdict(lambda: defaultdict(int)),
         "cat_examples": defaultdict(dict),
     }
@@ -1582,11 +1557,8 @@ def _new_fail_acc() -> dict:
 def _fail_acc_add(acc: dict, failures: list) -> None:
     """Masukkan SATU tiket yang sudah dinilai ke akumulator sebuah simpul."""
     acc["evaluated"] += 1
-    cats_here = {cat for cat, _req, _reason in failures}
-    if cats_here:
+    if failures:
         acc["fail_tickets"] += 1
-    for cat in cats_here:
-        acc["cat_tickets"][cat] += 1
     for cat, req, reason in failures:
         acc["cat_reqs"][cat][req] += 1
         if reason and req not in acc["cat_examples"][cat]:
@@ -1607,18 +1579,25 @@ def _fail_node(acc: dict, limit: "int | None" = _FAIL_TOP_CATEGORIES,
 
     ``with_reasons=False`` mengosongkan ``top_reasons``: rincian per SALES AGENT
     berhenti di tingkat KATEGORI dan tidak boleh menyebut requirement KB-nya. Karena
-    itu teksnya tidak dikirim sama sekali, bukan sekadar disembunyikan di UI."""
+    itu teksnya tidak dikirim sama sekali, bukan sekadar disembunyikan di UI.
+
+    ``fail_count`` tiap kategori = TOTAL kemunculan item gagal (SUM seluruh
+    ``top_reasons[].count``), bukan lagi jumlah tiket unik (18 September 2026) —
+    definisi yang sama dengan ``compute_failure_reasons``, supaya agregat dan
+    Hierarki Based tidak pernah saling membantah. ``top_reasons`` juga tidak lagi
+    dipotong ke 3 teratas, dengan alasan yang sama."""
     total = acc["evaluated"]
     cats = []
-    for cat, fails in acc["cat_tickets"].items():
-        top = sorted(acc["cat_reqs"][cat].items(), key=lambda kv: (kv[1], kv[0]), reverse=True)
+    for cat, reqs in acc["cat_reqs"].items():
+        top = sorted(reqs.items(), key=lambda kv: (kv[1], kv[0]), reverse=True)
+        fails = sum(reqs.values())
         cats.append({
             "category": cat,
             "fail_count": fails,
             "pct": _rate(fails, total),
             "top_reasons": [
                 {"requirement": req, "count": n, "example": acc["cat_examples"][cat].get(req, "")}
-                for req, n in top[:_FAIL_TOP_REASONS]
+                for req, n in top
             ] if with_reasons else [],
         })
     cats.sort(key=lambda c: (c["fail_count"], c["category"]), reverse=True)
@@ -1627,10 +1606,11 @@ def _fail_node(acc: dict, limit: "int | None" = _FAIL_TOP_CATEGORIES,
         "fail_tickets": acc["fail_tickets"],
         "fail_rate": _rate(acc["fail_tickets"], total),
         "categories": cats if limit is None else cats[:limit],
-        # Peta kategori -> jumlah tiket, SELALU lengkap (tidak ikut dipotong ``limit``).
-        # Inilah yang memberi makan kolom per fase percakapan di tab Failure Reason;
-        # ``categories`` di atas tetap ada untuk daftar "Alasan Teratas".
-        "cat_counts": {c: n for c, n in acc["cat_tickets"].items()},
+        # Peta kategori -> total kemunculan item gagal, SELALU lengkap (tidak ikut
+        # dipotong ``limit``). Inilah yang memberi makan kolom per fase percakapan di
+        # tab Failure Reason; ``categories`` di atas tetap ada untuk daftar "Alasan
+        # Teratas".
+        "cat_counts": {c: sum(reqs.values()) for c, reqs in acc["cat_reqs"].items()},
         **extra,
     }
 
@@ -1779,7 +1759,7 @@ def compute_failure_reasons_hierarchy(db, campaign: str = None, campaigns: list 
         # terbaca mengikuti alur telepon (Greeting -> Probing -> ... -> Legal
         # Statement) alih-alih urutan abjad atau urutan jumlah kegagalan.
         "categories_order": failure_category_columns(
-            db, campaign, campaigns, seen=sorted(grand["cat_tickets"])
+            db, campaign, campaigns, seen=sorted(grand["cat_reqs"])
         ),
         "all_telesales": _fail_node(grand, name="All Telesales"),
         "area_managers": area_managers,
@@ -1863,6 +1843,53 @@ def _transcript_cell(v: dict):
     return v.get("extracted_value")
 
 
+def _iter_export_tickets(db, campaign: str = None, campaigns: list = None):
+    """Hasilkan ``(result, ticket_id, evaluasi, ai_status)`` untuk tiket ``done`` yang
+    AI Status-nya Not Qualified (FAIL) atau PENDING — cakupan SEMUA export agregat.
+
+    Dipisah supaya export per kategori verifikasi dan export per fase percakapan
+    memakai penyaring tiket yang IDENTIK; kalau cakupannya diubah, keduanya ikut.
+    Evaluasinya sudah menerapkan banding yang di-approve (``_adjusted_evaluation``),
+    sama seperti tampilan dashboard.
+    """
+    done_results = done_results_query(db, campaign, campaigns).all()
+    result_ids = [r.id for r in done_results]
+    eval_by_id: dict = {}
+    if result_ids:
+        for rid, rjson in (
+            db.query(ResultData.result_id, ResultData.result_json)
+            .filter(ResultData.result_id.in_(result_ids))
+            .order_by(ResultData.created_at.desc())
+            .all()
+        ):
+            eval_by_id.setdefault(str(rid), rjson)
+    appeal_map = crud.error_code_appeals_for_results(db, [str(r) for r in result_ids])
+    qc_map = crud.qc_status_requests_for(db, [str(r) for r in result_ids])
+    mdocs = _missing_docs_map(db, done_results, eval_by_id)
+    gaps = data_gap_map(db, done_results)
+    submit_times = _submit_time_map(db, done_results)
+    doc_map = document_status_map(db, done_results)
+    now = datetime.now()
+
+    for r in done_results:
+        rid = str(r.id)
+        raw = eval_by_id.get(rid)
+        ds = doc_map.get(rid)
+        ev = _adjusted_evaluation(raw, appeal_map.get(rid), ds)
+        if ev is None:
+            continue
+        # _result_ai_status menerima result_json MENTAH (ia menyesuaikan bandingnya
+        # sendiri); mengoper evaluasi yang sudah disesuaikan membuatnya balas None.
+        ai = _result_ai_status(
+            raw, appeal_map.get(rid), qc_map.get(rid), mdocs.get(rid, False),
+            _doc_sla_expired(submit_times.get(r.id), now), ds,
+            data_gap=gaps.get(rid),
+        )
+        if ai not in _VERIF_EXPORT_STATUSES:
+            continue
+        yield r, _customer_id(r.source_files) or rid, ev, ai
+
+
 def compute_verification_export(db, category: str, campaign: str = None,
                                 campaigns: list = None) -> dict:
     """Baris export untuk SATU kategori verifikasi.
@@ -1885,44 +1912,9 @@ def compute_verification_export(db, category: str, campaign: str = None,
     if conf is None:
         raise ValueError(f"kategori export tidak dikenal: {category}")
 
-    done_results = done_results_query(db, campaign, campaigns).all()
-    result_ids = [r.id for r in done_results]
-    eval_by_id: dict = {}
-    if result_ids:
-        for rid, rjson in (
-            db.query(ResultData.result_id, ResultData.result_json)
-            .filter(ResultData.result_id.in_(result_ids))
-            .order_by(ResultData.created_at.desc())
-            .all()
-        ):
-            eval_by_id.setdefault(str(rid), rjson)
-    appeal_map = crud.error_code_appeals_for_results(db, [str(r) for r in result_ids])
-    qc_map = crud.qc_status_requests_for(db, [str(r) for r in result_ids])
-    mdocs = _missing_docs_map(db, done_results, eval_by_id)
-    gaps = data_gap_map(db, done_results)
-    submit_times = _submit_time_map(db, done_results)
-    doc_map = document_status_map(db, done_results)
-    now = datetime.now()
-
     fields = conf["fields"]
     rows = []
-    for r in done_results:
-        rid = str(r.id)
-        raw = eval_by_id.get(rid)
-        ds = doc_map.get(rid)
-        ev = _adjusted_evaluation(raw, appeal_map.get(rid), ds)
-        if ev is None:
-            continue
-        # _result_ai_status menerima result_json MENTAH (ia menyesuaikan bandingnya
-        # sendiri); mengoper evaluasi yang sudah disesuaikan membuatnya balas None.
-        ai = _result_ai_status(
-            raw, appeal_map.get(rid), qc_map.get(rid), mdocs.get(rid, False),
-            _doc_sla_expired(submit_times.get(r.id), now), ds,
-            data_gap=gaps.get(rid),
-        )
-        if ai not in _VERIF_EXPORT_STATUSES:
-            continue
-        ticket_id = _customer_id(r.source_files) or rid
+    for r, ticket_id, ev, ai in _iter_export_tickets(db, campaign, campaigns):
         for v in (ev.get(conf["block"]) or []):
             if not isinstance(v, dict):
                 continue
@@ -1971,6 +1963,93 @@ def compute_verification_export(db, category: str, campaign: str = None,
         ("reason", "Reason"),
     ]
     return {"category": category, "label": conf["label"], "columns": columns, "rows": rows}
+
+
+# --- Export agregat per FASE PERCAKAPAN (XLSX) -----------------------------
+# Kategori scorecard = nama blok di ``conversation_phases`` KB (Greeting, Probing,
+# Penjelasan Mega Cashline, ...). Untuk satu fase: setiap item scorecard yang
+# BELUM_SESUAI pada tiket Not Qualified / Pending, satu baris per item. Definisi
+# "gagal" SAMA dengan tab Failure Reason (``_scorecard_failures``: status
+# BELUM_SESUAI, kategori lewat ``category_label``), jadi jumlah baris tiket Not
+# Qualified di sini cocok dengan angka "Failure" kategori itu di tab tersebut.
+
+#: Awalan key kategori export fase, membedakannya dari ``VERIFICATION_EXPORT_CATEGORIES``.
+PHASE_EXPORT_PREFIX = "fase:"
+
+#: Dua fase ini SUDAH punya export sendiri yang lebih kaya (per parameter, dengan
+#: kolom Transkrip/Acuan/Similarity) di ``VERIFICATION_EXPORT_CATEGORIES``; menaruhnya
+#: lagi di grup fase hanya menghasilkan dua menu yang isinya beririsan.
+_PHASE_EXPORT_SKIP = ("Verifikasi Statik", "Verifikasi Dinamis")
+
+PHASE_EXPORT_COLUMNS = [
+    ("ticket_id", "Ticket ID"),
+    ("campaign", "Campaign"),
+    ("ai_status", "AI Status"),
+    ("item_code", "Item Code"),
+    ("requirement", "Requirement"),
+    ("weight", "Bobot"),
+    ("error_code", "Error Code"),
+    ("risk_base", "Risk Base"),
+    ("reason", "Reason"),
+    ("timestamp", "Timestamp"),
+    ("evidence", "Evidence"),
+    ("sumber_rekaman", "Sumber Rekaman"),
+]
+
+
+def export_phase_labels(db, campaign: str = None, campaigns: list = None) -> list:
+    """Nama fase percakapan yang tersedia sebagai menu export, urut seperti di KB.
+
+    Bersumber dari ``conversation_phases`` KB campaign yang berlaku (lewat
+    ``failure_category_columns``), minus fase yang sudah punya export verifikasi
+    sendiri."""
+    return [c for c in failure_category_columns(db, campaign, campaigns)
+            if c not in _PHASE_EXPORT_SKIP]
+
+
+def compute_phase_export(db, phase: str, campaign: str = None,
+                         campaigns: list = None) -> dict:
+    """Baris export untuk SATU fase percakapan (``phase`` = label kategori tampilan).
+
+    Satu baris per item scorecard BELUM_SESUAI pada kategori itu, untuk tiket Not
+    Qualified & Pending. Tiket tanpa item gagal di fase ini tidak muncul.
+    ``error_code``/``risk_base`` dicocokkan lewat ``item_code`` dari tabel error code
+    yang sama dengan yang dilihat di dashboard (bisa lebih dari satu, dipisah koma).
+
+    Mengembalikan bentuk yang sama dengan ``compute_verification_export``.
+    """
+    rows = []
+    for r, ticket_id, ev, ai in _iter_export_tickets(db, campaign, campaigns):
+        codes: dict = defaultdict(list)
+        for er in build_error_code_table(ev):
+            ic = er.get("item_code")
+            if ic and er.get("error_code"):
+                codes[ic].append((er["error_code"], er.get("risk_base")))
+        for it in (ev.get("scorecard_result") or []):
+            if (it.get("status") or "").upper() != "BELUM_SESUAI":
+                continue
+            if category_label((it.get("category") or "").strip()) != phase:
+                continue
+            code = (it.get("item_code") or "").strip()
+            evd = it.get("evidence") if isinstance(it.get("evidence"), dict) else {}
+            pairs = codes.get(code, [])
+            rows.append({
+                "ticket_id": ticket_id,
+                "campaign": (r.campaign or "").strip(),
+                "ai_status": ai_status_label(ai),
+                "item_code": code,
+                "requirement": (it.get("requirement") or "").strip(),
+                "weight": it.get("weight"),
+                "error_code": ", ".join(dict.fromkeys(c for c, _ in pairs)) or None,
+                "risk_base": ", ".join(dict.fromkeys(str(b) for _, b in pairs if b)) or None,
+                "reason": (it.get("reason") or "").strip(),
+                "timestamp": evd.get("timestamp"),
+                "evidence": evd.get("quote"),
+                "sumber_rekaman": evd.get("ticket_id"),
+            })
+    rows.sort(key=lambda x: (x["ticket_id"], x["item_code"]))
+    return {"category": PHASE_EXPORT_PREFIX + phase, "label": phase,
+            "columns": PHASE_EXPORT_COLUMNS, "rows": rows}
 
 
 # --- Export SEMUA tiket pada satu rentang (XLSX) ----------------------------
@@ -2680,13 +2759,13 @@ def compute_team_agents(db, agent_ids) -> list:
             if _is_new_joiner(submit_by_rid.get(rid), aid, sales_map):
                 rows = override_risk_base_for_new_joiner(rows)
             # Sama dengan pohon global: hanya tiket Not Qualified yang menyumbang,
-            # dan SEMUA risk base tiket itu dihitung (bukan satu yang tertinggi),
-            # supaya Failure Rate versi ter-scope Area Manager / Team Leader memakai
-            # pembilang yang sama persis dengan versi global.
+            # dan risk base tertinggi tiket itu (satu, bukan tally semua pelanggaran)
+            # yang dihitung — supaya Failure Rate versi ter-scope Area Manager /
+            # Team Leader memakai pembilang yang sama persis dengan versi global.
             if _ai == "FAIL":
-                for _rb, _n in risk_base_tally(rows, ev).items():
-                    if _n:
-                        per_agent[aid][_rb] += _n
+                _top = top_risk_base(rows, ev)
+                if _top is not None:
+                    per_agent[aid][_top] += 1
 
     out = []
     for aid in ids:
@@ -3188,23 +3267,21 @@ def compute_stats_snapshot(db, customer_ids=None, roster_uids=None) -> dict:
             # dokumen (dalam H+2), bukan Qualified dan bukan Not Qualified.
             acc["pending"] += 1
             ca["pending"] += 1
-        # Pohon "Hierarki Failure Rate" (28 Agustus 2026) memakai aturannya sendiri,
-        # berbeda dari seluruh tabel lain di halaman ini:
-        #   1. HANYA tiket Not Qualified yang menyumbang. Tiket PENDING (vonis belum
-        #      final) dan PASS (bisa membawa error code tanpa jatuh di bawah passing
-        #      grade) tidak dihitung.
-        #   2. SEMUA risk base tiket itu dihitung, bukan satu yang tertinggi — kolom
-        #      High/Medium/Low di sana mengukur PELANGGARAN, bukan tiket. Karena itu
-        #      Total Failure bisa melebihi jumlah tiket Not Qualified.
-        _tally = (
-            risk_base_tally(risk_rows, eval_by_id.get(str(r.id)))
-            if ai == "FAIL"
-            else {k: 0 for k in _RISK_PRIORITY}
-        )
-        for _rb, _n in _tally.items():
-            if _n:
-                acc[_rb] += _n
-                ca[_rb] += _n
+        # Pohon "Hierarki Failure Rate" (28 Agustus 2026, disederhanakan lagi
+        # 17 September 2026) memakai aturannya sendiri, berbeda dari seluruh
+        # tabel lain di halaman ini hanya dalam satu hal:
+        #   HANYA tiket Not Qualified yang menyumbang. Tiket PENDING (vonis belum
+        #   final) dan PASS (bisa membawa error code tanpa jatuh di bawah passing
+        #   grade) tidak dihitung.
+        # Risk base yang disumbangkan tiap tiket adalah SATU yang tertinggi (``top``,
+        # sama seperti KPI Overview) — bukan tally semua pelanggaran lagi. Ini
+        # menjamin Total Failure (H+M+L) tidak pernah melebihi jumlah tiket Not
+        # Qualified, sehingga Failure Rate tidak pernah melewati 100%.
+        _tally = {k: 0 for k in _RISK_PRIORITY}
+        if ai == "FAIL" and top is not None:
+            _tally[top] = 1
+            acc[top] += 1
+            ca[top] += 1
         # Daun ke-4 pohon: satu baris per tiket, memakai kunci yang sama dengan
         # akumulator agent supaya ``_risk_node`` bisa mengolahnya tanpa cabang khusus.
         _ticket_node = {
@@ -3492,14 +3569,11 @@ def _risk_node(v: dict) -> dict:
     dan ``compute_scoped_hierarchy`` memakai kunci yang sama.
 
     ``error_rate`` = Total Failure ÷ Submissions (lihat ``_rate_of``). Sejak
-    28 Agustus 2026 pembilangnya HANYA berasal dari tiket Not Qualified, tetapi
-    menghitung SEMUA risk base tiket itu (lihat ``risk_base_tally``) — kolom
-    High/Medium/Low di sini mengukur PELANGGARAN, bukan tiket.
-
-    Konsekuensinya ``total_risk`` BISA melebihi ``errors``, dan rasionya secara
-    teori bisa melewati 100% bila rata-rata pelanggaran per tiket gagal cukup tinggi.
-    Itu memang yang diminta: tiket dengan 5 pelanggaran berat tidak sepadan dengan
-    tiket yang melanggar sekali.
+    28 Agustus 2026 pembilangnya HANYA berasal dari tiket Not Qualified; sejak
+    17 September 2026 tiap tiket menyumbang SATU risk base tertinggi saja
+    (``top_risk_base``) — kolom High/Medium/Low di sini kembali mengukur TIKET,
+    bukan pelanggaran, jadi ``total_risk`` (dan karenanya ``error_rate``) tidak
+    pernah melebihi ``errors``/100%.
 
     Kolom ``errors`` (jumlah tiket Not Qualified) dipertahankan sebagai konteks;
     ``approve``/``pending`` melengkapinya supaya ketiga vonis AI tampil berdampingan
