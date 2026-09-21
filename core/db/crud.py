@@ -1856,7 +1856,9 @@ def get_tms_cashline_change_flags(db: Session, result_ids: list[str]) -> dict[st
     return out
 
 
-def tms_submit_time_map(db: Session, cids: list[str]) -> dict[str, str]:
+def tms_submit_time_map(
+    db: Session, cids: list[str], index: dict | None = None
+) -> dict[str, str]:
     """Batched map ``cid -> submit_time`` (string mentah, mis. "2026-06-17 15:24:53").
     Menyuapi timer SLA H+2 di menu Pending Check, yang menghitung sejak waktu
     pengajuan pencairan.
@@ -1866,11 +1868,15 @@ def tms_submit_time_map(db: Session, cids: list[str]) -> dict[str, str]:
     yang sudah tidak diisi sejak reference data pindah ke DWH API. Query lama
     tetap berjalan tanpa error tetapi SELALU mengembalikan peta kosong, sehingga
     submit_time selalu None dan status PENDING tidak pernah muncul di layar.
+
+    ``index`` = hasil ``cashline_agent_index()`` yang sudah dibaca pemanggil;
+    dibaca sendiri bila tidak diberikan.
     """
     ids = [str(x).strip() for x in cids if x]
     if not ids:
         return {}
-    index = cashline_agent_index(db)
+    if index is None:
+        index = cashline_agent_index(db)
     out: dict[str, str] = {}
     for cid in ids:
         if cid in out:

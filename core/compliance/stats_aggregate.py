@@ -441,7 +441,7 @@ def _doc_sla_expired(submit_time, now=None) -> bool:
     return now >= dt + timedelta(hours=SLA_HOURS)
 
 
-def _submit_time_map(db, results) -> dict:
+def _submit_time_map(db, results, index: dict | None = None) -> dict:
     """Map ``Result.id -> raw submit_time string`` (untuk menghitung tenggat H+2
     status PENDING). Mirror ``_submit_date_map`` tapi menyimpan string mentah.
 
@@ -450,7 +450,10 @@ def _submit_time_map(db, results) -> dict:
     reference data pindah ke DWH API. Query lama tetap jalan tanpa error tetapi
     SELALU mengembalikan kosong.
     Akibatnya submit_time selalu None -> ``_doc_sla_expired`` selalu True -> status
-    PENDING tidak pernah muncul di layar."""
+    PENDING tidak pernah muncul di layar.
+
+    ``index`` = hasil ``crud.cashline_agent_index()`` yang sudah dibaca pemanggil;
+    dibaca sendiri bila tidak diberikan."""
     cid_by_rid = {}
     for r in results:
         cid = _customer_id(r.source_files)
@@ -458,7 +461,8 @@ def _submit_time_map(db, results) -> dict:
             cid_by_rid[r.id] = cid.strip()
     if not cid_by_rid:
         return {}
-    index = crud.cashline_agent_index(db)
+    if index is None:
+        index = crud.cashline_agent_index(db)
     return {
         rid: (index.get(cid) or {}).get("submit_time")
         for rid, cid in cid_by_rid.items()
@@ -1068,22 +1072,48 @@ def _normalized_json(result_json):
     return {**result_json, "evaluation": evaluation}
 
 
-def document_status_map(db, results) -> dict:
+def _proven_doc_types(db, ids, types_by_rid=None, ocr_by_rid=None) -> dict:
+    """``str(result_id) -> {doc_type}`` terunggah, TANPA jenis yang OCR-nya
+    membuktikan dokumennya keliru. Dipakai ``_missing_docs_map`` dan
+    ``document_status_map`` supaya keduanya sepakat.
+
+    Peta yang dioper tidak diubah: yang dikembalikan selalu dict baru."""
+    if types_by_rid is None:
+        types_by_rid = crud.document_types_by_result(db, ids)
+    if ocr_by_rid is None:
+        ocr_by_rid = crud.document_ocr_by_result(db, ids)
+    out = dict(types_by_rid)
+    for rid, docs in ocr_by_rid.items():
+        unproven = _unproven_doc_types(docs)
+        if unproven:
+            out[rid] = set(out.get(rid, set())) - unproven
+    return out
+
+
+def document_status_map(
+    db,
+    results,
+    *,
+    types_by_rid: dict | None = None,
+    ocr_by_rid: dict | None = None,
+    agent_index: dict | None = None,
+) -> dict:
     """``str(result_id) -> (uploaded_types:set, sla_expired:bool)`` — bahan yang
     dibutuhkan ``error_codes.apply_static_document_status`` untuk memutuskan apakah
     baris zona abu-abu berstatus MATCH, PENDING, atau MISMATCH.
 
     Dokumen berjenis KELIRU tidak dihitung terunggah, sama dengan ``_missing_docs_map``:
-    mengunggah KTP ke slot KK tidak membuat KK-nya ada."""
+    mengunggah KTP ke slot KK tidak membuat KK-nya ada.
+
+    ``types_by_rid`` (``crud.document_types_by_result``), ``ocr_by_rid``
+    (``crud.document_ocr_by_result``) dan ``agent_index``
+    (``crud.cashline_agent_index``) boleh dioper pemanggil yang sudah membacanya
+    untuk ``results`` yang sama; yang tidak dioper dibaca sendiri."""
     ids = [str(r.id) for r in results]
     if not ids:
         return {}
-    types_by_rid = crud.document_types_by_result(db, ids)
-    for rid, docs in crud.document_ocr_by_result(db, ids).items():
-        unproven = _unproven_doc_types(docs)
-        if unproven:
-            types_by_rid[rid] = set(types_by_rid.get(rid, set())) - unproven
-    submits = _submit_time_map(db, results)
+    types_by_rid = _proven_doc_types(db, ids, types_by_rid, ocr_by_rid)
+    submits = _submit_time_map(db, results, agent_index)
     now = datetime.now()
     return {
         str(r.id): (set(types_by_rid.get(str(r.id), set())),
@@ -1092,7 +1122,14 @@ def document_status_map(db, results) -> dict:
     }
 
 
-def _missing_docs_map(db, results, eval_by_id: dict | None = None) -> dict:
+def _missing_docs_map(
+    db,
+    results,
+    eval_by_id: dict | None = None,
+    *,
+    types_by_rid: dict | None = None,
+    ocr_by_rid: dict | None = None,
+) -> dict:
     """``str(result_id) -> True`` when a required supporting document has not been
     uploaded. Two independent sources of requirement:
 
@@ -1105,7 +1142,8 @@ def _missing_docs_map(db, results, eval_by_id: dict | None = None) -> dict:
        document type, and only for results uploaded at/after the band cutoff.
 
     Batched; the credit-limit lookup runs only for tickets without a TMS change flag.
-    ``eval_by_id`` (``str(result_id) -> result_json``) is looked up when not supplied.
+    ``eval_by_id`` (``str(result_id) -> result_json``), ``types_by_rid`` and
+    ``ocr_by_rid`` (see ``document_status_map``) are looked up when not supplied.
 
     Dokumen yang jenisnya KELIRU tidak dihitung sebagai terpenuhi (14 Agustus 2026):
     mengunggah KTP ke slot NPWP tidak membuat NPWP-nya ada. Selain menerbitkan C03,
@@ -1123,11 +1161,7 @@ def _missing_docs_map(db, results, eval_by_id: dict | None = None) -> dict:
     ids = [str(r.id) for r in results]
     if not ids:
         return {}
-    types_by_rid = crud.document_types_by_result(db, ids)
-    for rid, docs in crud.document_ocr_by_result(db, ids).items():
-        unproven = _unproven_doc_types(docs)
-        if unproven:
-            types_by_rid[rid] = set(types_by_rid.get(rid, set())) - unproven
+    types_by_rid = _proven_doc_types(db, ids, types_by_rid, ocr_by_rid)
     cid_by_rid = {}
     for r in results:
         sf = r.source_files or []
