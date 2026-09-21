@@ -6,6 +6,44 @@ factored here so the Statistics aggregation can count Approve/Return consistentl
 Input is an evaluation dict that has ALREADY had approved appeals applied; the QC
 status override and the non-tolerable veto are applied by the caller.
 """
+import re
+
+# ``compliance.recording_type.stamp_reason_provenance`` menempelkan kalimat asal
+# rekaman ke EKOR ``reason`` tiap baris scorecard, dipisah " - " (mis. "... - Evidence
+# diambil dari recording utama."). Berguna di tabel Hasil Scorecard/EvaluationView,
+# tapi di kolom SCOREBOMB (Results) ia cuma kebisingan — dan pada tiket yang
+# rekamannya sama untuk dua item (mis. SC_CL_8 & SC_CL_28, keduanya soal provisi,
+# beda tahap) justru membuat baris SCOREBOMB-nya terbaca identik walau item_code-nya
+# beda (permintaan 15 September 2026). Kalimat provenance SELALU jadi kalimat
+# TERAKHIR yang ditempel, jadi aman dipotong dengan pola di akhir string.
+_SCOREBOMB_PROVENANCE_TAIL_RE = re.compile(
+    r"\s*-\s*Evidence (?:diambil dari|tidak disebutkan)[^.]*\.\s*$"
+)
+
+
+def _trim_scorebomb_reason(reason) -> str:
+    """``reason`` scorecard tanpa ekor provenance rekaman — lihat komentar di atas."""
+    text = str(reason or "")
+    trimmed = _SCOREBOMB_PROVENANCE_TAIL_RE.sub("", text).rstrip()
+    return trimmed or text
+
+
+# Pasangan item "Penjelasan X" / "Final Konfirmasi X" (mis. SC_CL_8 & SC_CL_28,
+# sama-sama soal provisi) sering menilai FAKTA yang sama dari SATU kutipan bukti,
+# terutama pada tiket satu-rekaman (mode "full", bukan dua-tahap) — LLM lalu menulis
+# ``reason`` yang nyaris identik untuk keduanya, walau ``requirement``-nya sendiri
+# sudah beda tahap. Kalimat LLM TIDAK diedit/ditulis-ulang (terlalu beragam
+# strukturnya untuk disisipi kata secara aman, lihat ``stamp_reason_provenance``
+# untuk alasan yang sama) — cukup ditempel PENANDA TAHAP di ekornya, dari
+# ``category`` baris itu sendiri (pasti ada, bukan tebakan), supaya SC_CL_8 dan
+# SC_CL_28 pada tiket yang sama TIDAK PERNAH terbaca sebagai baris yang sama persis
+# di kolom SCOREBOMB (permintaan 15 September 2026).
+def _stamp_category_reason(reason, category) -> str:
+    text = _trim_scorebomb_reason(reason)
+    cat = str(category or "").strip()
+    if not cat:
+        return text
+    return f"{text} (tahap: {cat})"
 
 
 def _to_num(value):
@@ -59,7 +97,7 @@ def no_product_interest(evaluation: dict) -> bool:
     return cashline_status != "INTERESTED" and mus_status != "INTERESTED"
 
 
-#: Kategori MUS-Cashline "wajib" asli (3 item, 35.5 sejak revisi v4) — item yang
+#: Kategori MUS-Cashline "wajib" asli (3 item, 36.75 sejak 18 September 2026) — item yang
 #: TERIKAT pada ``mus_wajib_tidak_dipenuhi``/``mus_exempt`` (lihat pemakaiannya di
 #: ``scorecard_score``). SENGAJA dipisah dari MUS Kartu Kredit (di bawah): MUS
 #: Kartu Kredit TIDAK punya kewajiban serupa (murni aditif, lihat ``max_score``),
@@ -150,7 +188,23 @@ def mus_wajib_tidak_dipenuhi(evaluation: dict) -> bool:
 
 def max_score(evaluation: dict):
     """Skor maksimal = jumlah bobot produk yang diminati (Mega Cashline 100 +
-    Mega Ultima Shield 35.5 + MUS Kartu Kredit 13.25); fallback ke ``maximum_score``.
+    Mega Ultima Shield 36.75 + MUS Kartu Kredit 13.25); fallback ke ``maximum_score``.
+
+    Revisi 18 September 2026 (``Score Card Cashline 18092026.xlsx``): Mega Ultima
+    Shield naik 35,5 -> 36,75 karena SATU item baru di kategori "Final Konfirmasi
+    Mega Ultima Shield" — ``SC_CL_43`` "premi yang telah dibayarkan tidak dapat
+    dikembalikan apabila customer mengajukan pembatalan" (bobot 1,25, Major/Not
+    tolerable). Itu SATU-SATUNYA perubahan bobot pada revisi itu; Mega Cashline
+    (100) dan MUS Kartu Kredit (13,25) tidak bergerak, sehingga "Total Score" xlsx
+    naik 148,75 -> 150 dan passing grade 133,875 -> 135.
+
+    Kodenya sengaja ``SC_CL_43`` (append), BUKAN disisipkan sebagai SC_CL_35 dengan
+    menggeser nomor sesudahnya: seluruh ``result_json`` tiket lama sudah menyimpan
+    SC_CL_35/36 dengan arti yang berbeda, dan renumbering akan membuat riwayat itu
+    salah baca. Diukur sebelum diterapkan: pada 50 tiket cashline yang sudah ``done``,
+    kenaikan penyebut ini TIDAK membalik satu pun vonis PASS/FAIL (tiket lama tidak
+    punya SC_CL_43 sehingga tidak kehilangan apa pun, dan skornya ikut naik 1,25
+    sementara batas lulusnya hanya naik 1,125).
 
     Revisi scorecard v4 (14 September 2026, ``Score Card Cashline 14092026.xlsx``
     tab "cashline + mega ultima shield"): SELURUH bobot direvisi ulang, bukan cuma
@@ -158,14 +212,14 @@ def max_score(evaluation: dict):
     weight per-item baru di ``scorecard_text`` campaign, mis. Verifikasi statik
     15->10/item, Verifikasi Dinamis 15->10 total), dan Mega Ultima Shield turun
     dari 41,25 ke 35,5 (SC_CL_19 5->3, SC_CL_21 4.5->3, SC_CL_33 3.25->2.25,
-    SC_CL_35 3.5->2.25 — total -5,75). Total gabungan (Cashline+MUS+MUS CC, semua
-    berminat) = 100+35.5+13.25 = 148.75, cocok dengan "Total Score" di xlsx.
+    SC_CL_35 3.5->2.25 — total -5,75). Total gabungan saat itu = 100+35.5+13.25
+    = 148,75; sejak revisi 18 September 2026 di atas menjadi 100+36.75+13.25 = 150.
 
     Bobot MUS juga dihitung ketika MUS WAJIB tetapi tidak dipenuhi
     (``mus_wajib_tidak_dipenuhi``). Di situlah aturan 8 September 2026 menggigit:
     keringanan lama menurunkan skor maksimal sehingga tiket cashline-saja bisa
     LULUS dengan nilai penuh. Sekarang penyebutnya tetap penuh dan item MUS
-    dipotong penuh, sehingga tiket semacam itu mentok di 100/135.5 = 73,8% — di
+    dipotong penuh, sehingga tiket semacam itu mentok di 100/136.75 = 73,1% — di
     bawah batas lulus 90%, jadi TIDAK LULUS tanpa perlu aturan veto terpisah.
 
     Tiket yang DIKECUALIKAN tetap memakai perhitungan lama (hanya Mega Cashline).
@@ -186,10 +240,10 @@ def max_score(evaluation: dict):
         total += 100
         found = True
     if (evaluation.get("mus_interest") or {}).get("status") == "INTERESTED":
-        total += 35.5
+        total += 36.75
         found = True
     elif mus_wajib_tidak_dipenuhi(evaluation):
-        total += 35.5
+        total += 36.75
         found = True
     if (evaluation.get("mus_cc_interest") or {}).get("status") == "INTERESTED":
         total += 13.25
@@ -370,7 +424,7 @@ def score_bomb_items(evaluation: dict) -> list:
         out.append({
             "item_code": (it or {}).get("item_code"),
             "requirement": (it or {}).get("requirement"),
-            "reason": (it or {}).get("reason"),
+            "reason": _trim_scorebomb_reason((it or {}).get("reason")),
             "status": "FAIL",
             "ratio": CRITICAL_BOMB_RATIO,
             "amount": -(ms * CRITICAL_BOMB_RATIO) if ms else 0,
@@ -386,7 +440,7 @@ def score_bomb_items(evaluation: dict) -> list:
         out.append({
             "item_code": code,
             "requirement": (it or {}).get("requirement"),
-            "reason": (it or {}).get("reason"),
+            "reason": _stamp_category_reason((it or {}).get("reason"), (it or {}).get("category")),
             "status": "BELUM_SESUAI",
             "ratio": NON_TOLERABLE_BOMB_RATIO,
             "amount": -(ms * NON_TOLERABLE_BOMB_RATIO) if ms else 0,

@@ -24,7 +24,7 @@ router yang kebetulan menampilkannya.
 PROCESSING_STAGES = [
     ("unduh_pdf", "Mengunduh rekaman dari penyimpanan"),
     ("baca_teks_pdf", "Membaca teks transkrip"),
-    ("klasifikasi_llm", "Mengklasifikasi jenis rekaman (AI)"),
+    ("cek_nama_agent", "Memeriksa nama agent on-air"),
     ("rangkai_transkrip", "Menyusun transkrip gabungan"),
     ("campaign_dan_acuan", "Memuat konfigurasi campaign & data acuan"),
     ("penilaian_llm", "Penilaian AI (scorecard)"),

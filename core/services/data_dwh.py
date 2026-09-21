@@ -63,6 +63,12 @@ _CACHE_TTL_SEC = float(os.getenv("DWH_API_CACHE_TTL_SEC", "300"))
 
 _EMPTY_BUNDLE = {"cashline": None, "customer": None}
 
+# Kegagalan DWH (bukan 404) diingat sebentar saja, terpisah dari _cache: cukup
+# supaya satu pass halaman agregat tidak menunggu timeout untuk setiap cid saat DWH
+# down, tetapi tidak pernah dianggap bukti "datanya tidak ada".
+_FAIL_TTL_SEC = float(os.getenv("DWH_API_FAIL_TTL_SEC", "60"))
+_fail_until: dict[str, float] = {}
+
 # result_id -> (monotonic_timestamp, bundle)
 _cache: dict[str, tuple[float, dict]] = {}
 _cache_lock = Lock()
@@ -112,7 +118,22 @@ def _fetch_from_url(url: str) -> tuple[Optional[dict], Optional[int]]:
 
 
 def fetch_bundle(result_id: str) -> dict:
-    """Ambil ``{"cashline", "customer"}`` untuk ``result_id`` dari DWH (di-cache).
+    """Seperti ``fetch_bundle_checked`` tetapi hanya mengembalikan bundle-nya."""
+    return fetch_bundle_checked(result_id)[0]
+
+
+def fetch_bundle_checked(result_id: str) -> tuple[dict, bool]:
+    """``(bundle, pasti)``. ``pasti`` False berarti DWH tidak bisa dihubungi
+    (network error/timeout, HTTP non-404, body non-JSON) sehingga bundle kosong itu
+    BUKAN bukti datanya tidak ada. Kegagalan itu tidak masuk cache data; hanya
+    diingat ``DWH_API_FAIL_TTL_SEC`` (60 dtk) supaya DWH yang down tidak ditembak
+    ulang untuk setiap panggilan.
+
+    [MERGE 4-service 21092026] Dipakai gerbang PENDING di worker
+    (``process_transcript``): tanpa pembedaan ini gangguan DWH membuat tiket
+    ditandai PENDING "data acuan kosong" tanpa dinilai, dan tidak diulang otomatis.
+
+    Ambil ``{"cashline", "customer"}`` untuk ``result_id`` dari DWH (di-cache).
 
     [NEW] Strategi cache-first:
       1. Coba endpoint CACHE (/campaign/cashline-ntb-asscend/{id}) dulu -- cepat,
@@ -129,11 +150,14 @@ def fetch_bundle(result_id: str) -> dict:
     """
     rid = str(result_id or "").strip()
     if not rid:
-        return dict(_EMPTY_BUNDLE)
+        return dict(_EMPTY_BUNDLE), True
 
     cached = _cache_get(rid)
     if cached is not None:
-        return cached
+        return cached, True
+    with _cache_lock:
+        if _fail_until.get(rid, 0.0) > time.monotonic():
+            return dict(_EMPTY_BUNDLE), False
 
     # --- 1. Coba endpoint CACHE (database App A, cepat) dulu ---
     cache_url = DWH_API_BASE_URL + _API_PATH_CACHE.format(result_id=rid)
@@ -141,7 +165,7 @@ def fetch_bundle(result_id: str) -> dict:
     if bundle is not None:
         # Cache hit -- langsung pakai, TIDAK perlu panggil endpoint asli.
         _cache_put(rid, bundle)
-        return bundle
+        return bundle, True
 
     if status is not None and status != 404:
         # Server merespons tapi BUKAN 404/200 (mis. 500) -- tetap coba fallback
@@ -159,15 +183,22 @@ def fetch_bundle(result_id: str) -> dict:
     bundle, status = _fetch_from_url(original_url)
 
     if bundle is None:
+        if status != 404:
+            # DWH tidak bisa dihubungi / error -- BUKAN bukti datanya tidak ada.
+            # Hanya diingat _FAIL_TTL_SEC, supaya permintaan berikutnya mencoba lagi.
+            with _cache_lock:
+                _fail_until[rid] = time.monotonic() + _FAIL_TTL_SEC
+            return dict(_EMPTY_BUNDLE), False
         # 404 di endpoint asli juga -> memang tidak ada datanya di DWH.
         # Cache-kan bundle KOSONG supaya tidak nembak API berulang utk id yg sama.
         bundle = dict(_EMPTY_BUNDLE)
 
     _cache_put(rid, bundle)
-    return bundle
+    return bundle, True
 
 
 def clear_cache() -> None:
     """Kosongkan cache in-memory App B (dipakai di test / setelah data direfresh)."""
     with _cache_lock:
         _cache.clear()
+        _fail_until.clear()

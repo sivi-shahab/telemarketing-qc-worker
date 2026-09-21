@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Column, String, Float, Boolean, Text, DateTime, Integer, ForeignKey
+from sqlalchemy import Column, String, Float, Boolean, Text, DateTime, Integer, ForeignKey, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.sql import func
@@ -113,6 +113,9 @@ class Result(Base):
     source_files = Column(JSONB)
     num_calls = Column(Integer)
     transcript_path = Column(String(500))
+    # Indexed via raw migration 0001 ("idx_results_status"), not declared here —
+    # index=True would make alembic autogenerate try to add a duplicate (see
+    # the drop-duplicate-indexes migration, monolit 0057).
     status = Column(String(20), nullable=False, default="pending")
     error_message = Column(Text)
     result_path = Column(String(500))
@@ -140,6 +143,8 @@ class ResultData(Base):
     __tablename__ = "result_data"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    # Indexed via raw migration 0001 ("idx_result_data_result_id"), not declared
+    # here — see the ``status`` comment above on ``Result``.
     result_id = Column(UUID(as_uuid=True), ForeignKey("results.id", ondelete="CASCADE"))
     result_json = Column(JSONB, nullable=False)
     created_at = Column(DateTime, server_default=func.now())
@@ -616,12 +621,20 @@ class StatsSnapshot(Base):
     The Statistics aggregation (per-agent / per-campaign / hierarchy error rates)
     is expensive — it scans every ``done`` result's evaluation JSON. Since the
     dashboard is refreshed daily, the full payload is computed at most once per
-    WIB calendar day and cached here (see ``crud.get_or_build_stats_snapshot``).
+    WIB calendar day per scope and cached here (see ``crud.get_or_build_stats_snapshot``).
+
+    ``scope_key`` = ``""`` for the single GLOBAL snapshot (unscoped roles); a
+    non-empty hash for a scoped role (Area Manager / Team Leader / Sales Agent /
+    QC own-assignment / campaign-tagged) — see ``api/routers/stats._scope_key_for``.
+    Added 17 September 2026: scoped roles used to bypass this cache entirely and
+    recompute on every request.
     """
     __tablename__ = "stats_snapshots"
+    __table_args__ = (UniqueConstraint("snapshot_date", "scope_key", name="uq_stats_snapshots_date_scope"),)
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    snapshot_date = Column(String(10), unique=True, nullable=False)  # WIB "YYYY-MM-DD"
+    snapshot_date = Column(String(10), nullable=False)  # WIB "YYYY-MM-DD"
+    scope_key = Column(String(64), nullable=False, default="")
     payload = Column(JSONB, nullable=False)
     computed_at = Column(DateTime, server_default=func.now())
 

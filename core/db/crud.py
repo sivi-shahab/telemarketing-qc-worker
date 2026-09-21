@@ -871,6 +871,30 @@ def get_daily_stats(db: Session, customer_ids: Optional[list[str]] = None) -> li
 # Statistics snapshot (daily cache of the Statistics dashboard payload)
 # ---------------------------------------------------------------------------
 
+# Berapa hari snapshot lama disimpan sebelum dihapus (17 September 2026). Dengan
+# cache per-scope (scope_key), tabel ini bertambah 1 baris per scope AKTIF per
+# hari — tanpa retensi ini menumpuk tanpa batas (lihat improvement.md item 1.7).
+_STATS_SNAPSHOT_RETENTION_DAYS = 7
+
+
+def _prune_old_stats_snapshots(db: Session) -> None:
+    """Hapus baris ``stats_snapshots`` yang lebih tua dari retensi (semua scope).
+
+    Dipanggil hanya saat sebuah scope pindah ke hari baru (baris pertama hari
+    itu) — bukan di setiap request — supaya tidak menambah query DELETE ke
+    jalur cache-hit yang sudah cepat. Kegagalan di sini TIDAK boleh menggagalkan
+    penyimpanan snapshot yang baru dihitung, jadi dibungkus try/except oleh pemanggil.
+    """
+    from datetime import timedelta, timezone
+    from zoneinfo import ZoneInfo
+
+    cutoff = (
+        datetime.now(timezone.utc).astimezone(ZoneInfo("Asia/Jakarta")).date()
+        - timedelta(days=_STATS_SNAPSHOT_RETENTION_DAYS)
+    ).isoformat()
+    db.query(StatsSnapshot).filter(StatsSnapshot.snapshot_date < cutoff).delete(synchronize_session=False)
+
+
 def _wib_today_str() -> str:
     """Today's Asia/Jakarta (WIB) calendar date as ``"YYYY-MM-DD"``."""
     from datetime import timezone
@@ -1110,7 +1134,14 @@ def _stats_signature(db: Session) -> str:
     # v24: tiket campaign Collection (COLLECTION_CAMPAIGNS) dikeluarkan dari seluruh
     #      agregasi Statistics (17 September 2026). Daftar campaign-nya ikut sidik
     #      jari di bawah, karena mengubah env mengubah isi snapshot tanpa data baru.
-    version = "v24"
+    # v25: port delta monolit 1ccd74c..aec99ce (A: v20..v24, 17-18 September 2026)
+    #      SEKALIGUS — nomor A tidak dipakai karena split sudah memakai v20..v24 untuk
+    #      arti lain. Isinya: Hierarki Failure Rate kembali SATU risk base tertinggi
+    #      per tiket (bukan ``risk_base_tally``); tab Failure Reason & Hierarki Based
+    #      ``fail_count`` = TOTAL kemunculan item gagal, ``top_reasons`` tidak dipotong
+    #      ke 3; "Penjelasan Mega Ultima Shield" masuk B10; bobot MUS 35.5 -> 36.75
+    #      (SC_CL_43). Semua mengubah isi snapshot tanpa ada data baru.
+    version = "v25"
     sla = "1" if get_doc_sla_enabled(db) else "0"
     # Sidik jari daftar tersembunyi. WAJIB ikut: tanpa ini snapshot yang sudah
     # ter-cache akan terus menyajikan angka tiket yang baru disembunyikan sampai ada
@@ -1127,18 +1158,33 @@ def _stats_signature(db: Session) -> str:
     )
 
 
-def get_or_build_stats_snapshot(db: Session, force: bool = False) -> dict:
+def get_or_build_stats_snapshot(
+    db: Session, force: bool = False, scope_key: str = "", compute_fn=None,
+) -> dict:
     """Return the Statistics dashboard payload, recomputing it only when the
     underlying data changes (auto-invalidating cache).
 
     Each call computes a cheap ``_stats_signature``; if it matches the signature
-    stored in the latest cached snapshot, that snapshot is returned as-is.
-    Otherwise the payload is recomputed via
-    ``compliance.stats_aggregate.compute_stats_snapshot`` (imported lazily to avoid
-    an import cycle) and cached. ``force=True`` always recomputes.
+    stored in the latest cached snapshot FOR THIS ``scope_key``, that snapshot is
+    returned as-is. Otherwise the payload is recomputed — via ``compute_fn`` if
+    given, else ``compliance.stats_aggregate.compute_stats_snapshot(db)`` (the
+    global snapshot, imported lazily to avoid an import cycle) — and cached.
+    ``force=True`` always recomputes.
+
+    ``scope_key`` (default ``""``, the GLOBAL snapshot) lets scoped roles (Area
+    Manager / Team Leader / Sales Agent / QC / campaign-tagged, see
+    ``api/routers/stats._scope_key_for``) share this same cache: same scope_key +
+    same data signature = same cached row, instead of recomputing on every
+    request (added 17 September 2026 — scoped roles used to always bypass the
+    cache).
     """
     sig = _stats_signature(db)
-    latest = db.query(StatsSnapshot).order_by(desc(StatsSnapshot.id)).first()
+    latest = (
+        db.query(StatsSnapshot)
+        .filter(StatsSnapshot.scope_key == scope_key)
+        .order_by(desc(StatsSnapshot.id))
+        .first()
+    )
     if (
         latest is not None
         and not force
@@ -1147,17 +1193,29 @@ def get_or_build_stats_snapshot(db: Session, force: bool = False) -> dict:
     ):
         return latest.payload
 
-    from compliance.stats_aggregate import compute_stats_snapshot
-
-    payload = compute_stats_snapshot(db)
+    if compute_fn is not None:
+        payload = compute_fn()
+    else:
+        from compliance.stats_aggregate import compute_stats_snapshot
+        payload = compute_stats_snapshot(db)
     payload["_signature"] = sig
 
-    # Keep one row per WIB day (overwrite today's on change; new day => new row).
+    # Keep one row per (WIB day, scope) — overwrite today's on change; new day
+    # or new scope => new row.
     today = _wib_today_str()
-    row = db.query(StatsSnapshot).filter(StatsSnapshot.snapshot_date == today).first()
+    row = (
+        db.query(StatsSnapshot)
+        .filter(StatsSnapshot.snapshot_date == today, StatsSnapshot.scope_key == scope_key)
+        .first()
+    )
     if row is None:
-        row = StatsSnapshot(snapshot_date=today, payload=payload)
+        row = StatsSnapshot(snapshot_date=today, scope_key=scope_key, payload=payload)
         db.add(row)
+        try:
+            _prune_old_stats_snapshots(db)
+        except Exception:
+            db.rollback()
+            db.add(row)  # re-stage after rollback; commit below still runs
     else:
         row.payload = payload
         row.computed_at = datetime.utcnow()
@@ -1167,10 +1225,34 @@ def get_or_build_stats_snapshot(db: Session, force: bool = False) -> dict:
         # A concurrent request may have inserted today's row; fall back to what is
         # now stored rather than failing the request.
         db.rollback()
-        row = db.query(StatsSnapshot).filter(StatsSnapshot.snapshot_date == today).first()
+        row = (
+            db.query(StatsSnapshot)
+            .filter(StatsSnapshot.snapshot_date == today, StatsSnapshot.scope_key == scope_key)
+            .first()
+        )
         if row is not None and isinstance(row.payload, dict):
             return row.payload
     return payload
+
+
+def invalidate_scoped_stats_snapshots(db: Session) -> int:
+    """Hapus SEMUA snapshot ter-scope (``scope_key != ''``) hari ini, supaya
+    request berikutnya dari tiap scope menghitung ulang (lazy).
+
+    Dipakai ``POST /stats/refresh`` (17 September 2026, improvement.md item 2.4) —
+    sebelumnya endpoint itu hanya memaksa hitung ulang snapshot GLOBAL
+    (``scope_key=""``), sehingga tombol refresh SPQ Head tidak berpengaruh pada
+    angka yang dilihat Area Manager/Team Leader/Sales Agent/QC. Snapshot global
+    tetap ditangani terpisah oleh ``force=True`` di pemanggil.
+    """
+    today = _wib_today_str()
+    deleted = (
+        db.query(StatsSnapshot)
+        .filter(StatsSnapshot.snapshot_date == today, StatsSnapshot.scope_key != "")
+        .delete(synchronize_session=False)
+    )
+    db.commit()
+    return deleted
 
 
 # ---------------------------------------------------------------------------

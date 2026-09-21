@@ -65,6 +65,7 @@ Setelah N keluaran terkumpul:
    Konfirmasi & SC_CL_37 Legal Statement Mega Cashline wajib diulang).
 """
 import copy
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 SESUAI = "SESUAI"
@@ -418,3 +419,30 @@ def merge_parallel(
         base["cashline_data_verification"] = merged_verification
 
     return base, rincian, rincian_cashline
+
+
+def map_concurrently(fn, items, max_workers: int = 4) -> list:
+    """``[fn(item) for item in items]``, tetapi tiap panggilan berjalan BERSAMAAN.
+
+    Dipakai penilaian PARALEL (``worker.tasks.process_transcript``): tiap rekaman valid
+    dinilai lewat panggilan LLM sendiri, dan panggilan-panggilan itu tidak saling
+    bergantung — model tidak pernah melihat rekaman lain. Dijalankan berurutan, tiket
+    dua rekaman memakan ~1012 detik (2 x ~500); bersamaan, waktunya mendekati yang
+    terlama saja. Sebelum 21 September 2026 ia berurutan.
+
+    URUTAN hasil SAMA dengan ``items`` (bukan urutan selesai), karena
+    ``merge_parallel`` menjajarkan hasilnya dengan daftar berkas dan indeks rekaman
+    utama. Kegagalan satu panggilan diteruskan (yang pertama menurut urutan ``items``),
+    sama seperti versi berurutan; panggilan lain yang sudah jalan dibiarkan selesai
+    dulu — membatalkan panggilan LLM yang sedang berjalan tidak menghemat apa pun.
+
+    ``max_workers`` membatasi jumlah panggilan bersamaan PER TIKET. Worker Celery sendiri
+    menjalankan beberapa tiket sekaligus (``CELERY_CONCURRENCY``), sehingga total beban
+    ke endpoint LLM = tiket bersamaan x batas ini.
+    """
+    items = list(items)
+    if len(items) <= 1 or max_workers <= 1:
+        return [fn(it) for it in items]
+    with ThreadPoolExecutor(max_workers=min(max_workers, len(items))) as pool:
+        futures = [pool.submit(fn, it) for it in items]
+        return [f.result() for f in futures]

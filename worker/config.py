@@ -62,6 +62,14 @@ class WorkerSettings(BaseSettings):
 
     llm_timeout: float = 1800.0
 
+    # [MERGE A f672425/aec99ce] Penilaian PARALEL tiket multi-rekaman. WAJIB field di
+    # sini (bukan getattr di task): WorkerSettings repo ini TIDAK mewarisi
+    # core.config.BaseAppSettings, jadi tanpa field ini env PARALLEL_RECORDING_EVAL /
+    # PARALLEL_RECORDING_MAX_WORKERS tidak pernah terbaca dan sakelar mati-cepatnya
+    # tidak berfungsi. Beban puncak ke endpoint LLM = CELERY_CONCURRENCY x max_workers.
+    parallel_recording_eval: bool = True
+    parallel_recording_max_workers: int = 3
+
 
     # OCR uses its own (possibly different) LLM endpoint/model. Any value left
     # as None is simply omitted from the OCR call (so the function default or the

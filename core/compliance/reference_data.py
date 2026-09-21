@@ -96,11 +96,22 @@ CARDHOLDER_FIELD_ORDER = [
     "nama_kartu_suplement", "jumlah_kartu_suplement", "nama_keluarga_relasi",
 ]
 # Single-column campaign interest fields: ref field -> cashline column.
+#
+# [ADAPTASI] Monolit (16 September 2026) memindah "mega_cashline" ke kolom
+# "campaign" (kolom I bagian log-join export TMS, lihat migrasi monolit 0054).
+# Di sini TIDAK diikuti: baris cashline dari DWH API tidak membawa kolom
+# "campaign" sama sekali (0 dari 261 snapshot ``reference_data`` di produksi),
+# sedangkan "jenis-kartu-yang-dikehendaki" DWH sudah berisi nilai sejenis
+# ("Cashline Umum", 260 dari 261). Memindahnya berarti acuan selalu null.
+#
+# "mus_cc" sengaja TANPA kolom (sama dengan monolit): "status-log" ternyata
+# berarti REKAMAN VALID, bukan minat. Prompt (v82) mendefinisikan acuannya sama
+# dengan minat hasil ekstraksi LLM sendiri — placeholder yang selalu MATCH.
 CAMPAIGN_INTEREST_SINGLE_COLS = {
     "mega_cashline": "jenis-kartu-yang-dikehendaki",
     "mega_ultima_shield": "pendaftaran-credit-shield",
 }
-CAMPAIGN_INTEREST_FIELD_ORDER = ["mega_cashline", "mega_ultima_shield"]
+CAMPAIGN_INTEREST_FIELD_ORDER = ["mega_cashline", "mega_ultima_shield", "mus_cc"]
 
 # --- Document OCR reference ("acuan") field maps ----------------------------
 DOC_KTP_HOME_ADDR_COLS = [
@@ -161,6 +172,13 @@ def _clean(value) -> str:
 _ANNOT_LIMIT_RE = re.compile(r"^(\d+(?:[.,]\d+)?)\s*jt$", re.IGNORECASE)
 _ANNOT_CLD_RE = re.compile(r"^C\s*(\d+(?:[.,]\d+)?)\s*jt$", re.IGNORECASE)
 _ANNOT_NUM_RE = re.compile(r"^\d{2,4}$")
+# Kode pendek lain yang ditemukan di ekor cust_name tapi maknanya tidak diketahui
+# (16 September 2026, tiket 310221EhD0: "PURNOMO ERLANTO_6jt_200_175_PA" — "_PA"
+# membuat SELURUH nama gagal dibersihkan karena tidak dikenal segmen mana pun di
+# atas, dan Ascend-nya tidak pernah ketemu walau barisnya ada). Diperlakukan sama
+# seperti NTB/NPWP: dikenali & diabaikan saat membersihkan nama, TANPA menyetel
+# field apa pun di ``out`` (artinya tidak diketahui, bukan diasumsikan).
+_ANNOT_UNKNOWN_CODES = {"PA"}
 
 
 def _annot_rupiah(text: str) -> int | None:
@@ -168,6 +186,19 @@ def _annot_rupiah(text: str) -> int | None:
         return int(round(float(text.replace(",", ".")) * 1_000_000))
     except ValueError:
         return None
+
+
+def _strip_title_suffix(name: str) -> str:
+    """Buang gelar akademik yang menempel via koma SEBELUM underscore pertama.
+
+    16 September 2026, tiket 280844fMc1: "FIRONIKA KATUUK,S.KEP.NS_6jt_200_175"
+    — ",S.KEP.NS" bukan bagian dari anotasi ekor (ada SEBELUM underscore pertama,
+    menempel langsung ke nama), jadi tidak pernah tersentuh pembersihan anotasi di
+    atas dan bikin pencarian Ascend gagal. Nama nasabah TIDAK PERNAH memuat koma,
+    jadi memotong dari koma pertama aman di sini — hanya dipanggil pada dua jalur
+    yang SUDAH yakin sedang membangun nama bersih (lihat pemanggilnya).
+    """
+    return name.split(",", 1)[0].strip()
 
 
 def parse_cust_name(value) -> dict:
@@ -201,7 +232,7 @@ def parse_cust_name(value) -> dict:
     if not segs:
         # Ekor underscore kosong ("HATA SEPTIAWAN_12jt_80_209_") sudah tersaring di
         # atas; sisa di sini berarti nama yang berakhiran underscore saja.
-        return {**out, "nama": head.strip()}
+        return {**out, "nama": _strip_title_suffix(head.strip())}
 
     recognised = False
     nums: list[str] = []
@@ -212,6 +243,8 @@ def parse_cust_name(value) -> dict:
             recognised = True
         elif up == "NPWP":
             out["butuh_npwp"] = True
+            recognised = True
+        elif up in _ANNOT_UNKNOWN_CODES:
             recognised = True
         elif _ANNOT_CLD_RE.match(seg):
             out["opsi_cld"] = _annot_rupiah(_ANNOT_CLD_RE.match(seg).group(1))
@@ -241,7 +274,7 @@ def parse_cust_name(value) -> dict:
     elif len(nums) == 1:
         out["bunga_persen"] = int(nums[0]) / 100
 
-    out["nama"] = head.strip()
+    out["nama"] = _strip_title_suffix(head.strip())
     return out
 
 
@@ -320,7 +353,11 @@ def build_reference_data(
     Returns ``(text, warnings, raw)``. ``text`` adalah blok referensi untuk prompt
     LLM, sedangkan ``raw`` berisi baris MENTAH ``{"cashline", "customer"}`` yang
     disimpan pemanggil ke ``final_json["reference_data"]`` supaya dashboard tidak
-    perlu menembak Aplikasi A lagi. Missing rows/fields produce ``null`` values
+    perlu menembak Aplikasi A lagi. ``raw["cashline"] is not None`` /
+    ``raw["customer"] is not None`` menggantikan ``found_rows`` versi monolit
+    (``{"cashline": bool, "cardholder": bool}``) untuk memutuskan apakah key Task
+    B/C/D wajib ada di jawaban LLM — lihat ``evaluator.evaluate(required_keys=...)``.
+    Missing rows/fields produce ``null`` values
     (and a warning) rather than failing, so a submission without matching reference
     rows still evaluates (the LLM marks unmatched fields as SKIPPED_NULL).
 

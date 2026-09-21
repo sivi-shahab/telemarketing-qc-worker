@@ -38,4 +38,10 @@ celery_app.conf.update(
     # yang sama — persis keadaan yang membuat batas ini perlu dinaikkan.
     task_time_limit=3000,
     task_soft_time_limit=2400,
+    # Default 4 berarti tiap worker proses menahan concurrency*4 tugas sekaligus
+    # (di-"reserve" dari Redis) walau baru mengerjakan 1 — dengan task selambat ini
+    # (bisa ~50 menit), tiket lain yang seharusnya bisa dikerjakan proses lain malah
+    # tertahan di antrean proses yang sudah penuh. 1 = ambil tugas baru hanya saat ada
+    # slot kosong, supaya beban merata antar proses worker (17 September 2026).
+    worker_prefetch_multiplier=1,
 )
