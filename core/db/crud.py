@@ -3144,6 +3144,79 @@ def cancel_reprocess_job(db: Session, job_id: str) -> Optional[ReprocessJob]:
     return job
 
 
+def list_open_reprocess_jobs(db: Session, limit: int = 50) -> list[ReprocessJob]:
+    """Job yang BELUM tertutup (``finished_at`` kosong) — panel Kill milik Admin.
+
+    Sengaja TIDAK memakai aturan "benar-benar aktif" milik
+    :func:`running_reprocess_job`: justru job yang tersangkut (``pending`` tua,
+    atau ``processing`` yang worker-nya sudah mati) yang perlu dilihat dan
+    di-kill di sini. Job ``cancelled`` yang itemnya masih ``processing`` pun
+    ikut, karena "Batalkan" membiarkan item itu berjalan. Kedua scope ikut —
+    job satu-tiket tidak punya layar lain untuk dihentikan.
+    """
+    return (
+        db.query(ReprocessJob)
+        .filter(ReprocessJob.finished_at.is_(None))
+        .order_by(desc(ReprocessJob.created_at))
+        .limit(limit)
+        .all()
+    )
+
+
+def kill_reprocess_job(db: Session, job_id: str, username: str = None) -> list[int]:
+    """Hentikan PAKSA sebuah job: semua item yang belum selesai ditutup sekarang.
+
+    Beda dengan :func:`cancel_reprocess_job` yang membiarkan item ``processing``
+    selesai — itu benar selama worker-nya hidup, tetapi item ``processing`` tidak
+    pernah kedaluwarsa, jadi worker yang mati/hang mengunci tiketnya selamanya.
+
+    * ``pending``    -> ``skipped``
+    * ``processing`` -> ``failed``; row BARU yang setengah jadi dibuang, row LAMA
+      tidak disentuh (tiket tidak pernah berakhir tanpa hasil)
+    * job            -> ``cancelled`` + ``finished_at``
+
+    Mengembalikan id item ``processing`` yang dihentikan — pemanggil memakainya
+    untuk menghentikan task Celery-nya. Worker yang ternyata masih hidup melihat
+    itemnya sudah bukan ``processing`` lalu membuang hasilnya sendiri (lihat
+    ``worker.tasks.reprocess_ticket``).
+    """
+    job = get_reprocess_job(db, job_id)
+    if job is None:
+        return []
+    now = datetime.now()
+    who = username or "admin"
+    killed = []
+    new_ids = []
+    for item in (
+        db.query(ReprocessJobItem)
+        .filter(
+            ReprocessJobItem.job_id == job.id,
+            ReprocessJobItem.status.in_(("pending", "processing")),
+        )
+        .order_by(ReprocessJobItem.id)
+        .all()
+    ):
+        if item.status == "processing":
+            killed.append(item.id)
+            if item.new_result_id:
+                new_ids.append(str(item.new_result_id))
+            item.status = "failed"
+            item.error_message = f"Dihentikan paksa (kill) oleh {who}."
+            item.new_result_id = None
+        else:
+            item.status = "skipped"
+        item.finished_at = now
+    if job.status == "running":
+        job.status = "cancelled"
+    job.finished_at = now
+    db.commit()
+    # Setelah item-nya tidak lagi menunjuk ke row baru. Row LAMA ada di
+    # ``old_result_ids`` dan tidak pernah masuk daftar ini.
+    delete_results_by_ids(db, new_ids)
+    db.refresh(job)
+    return killed
+
+
 def finish_reprocess_job_if_complete(db: Session, job_id: str) -> Optional[ReprocessJob]:
     """Tutup job begitu tidak ada lagi item ``pending``/``processing``.
 

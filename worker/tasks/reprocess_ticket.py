@@ -85,6 +85,13 @@ def _remove_transcripts(client, bucket: str, result_id: str) -> None:
         client.remove_object(bucket, obj.object_name)
 
 
+def _killed(db, item_id: int) -> bool:
+    """Apakah item ini sudah ditutup dari luar (kill Admin) selagi task berjalan."""
+    db.expire_all()
+    item = crud.get_reprocess_item(db, item_id)
+    return item is None or item.status != "processing"
+
+
 @celery_app.task(name="worker.tasks.reprocess_ticket.reprocess_ticket")
 def reprocess_ticket(item_id: int):
     from worker.tasks.process_transcript import _minio_client, process_transcript
@@ -162,6 +169,15 @@ def reprocess_ticket(item_id: int):
                 or "Reproses tidak menghasilkan status 'done'."
             )
 
+        # Admin bisa meng-KILL job selagi evaluasi berjalan (``crud.kill_reprocess_job``
+        # menutup item ini jadi ``failed`` dan membuang row barunya). Kalau worker ini
+        # ternyata masih hidup, jangan sampai ia menghapus row LAMA sesudahnya —
+        # tiket itu akan berakhir tanpa hasil sama sekali.
+        if _killed(db, item_id):
+            crud.delete_results_by_ids(db, [new_result_id])
+            logger.warning("reprocess item %s di-kill; row baru %s dibuang", item_id, new_result_id)
+            return {"item_id": item_id, "status": "killed"}
+
         # Row lama dibuang HANYA setelah row barunya jadi. Yang dihapus persis id
         # yang dibekukan saat job dibuat — upload yang masuk di tengah job tidak
         # ikut, walau ticket id-nya sama.
@@ -187,7 +203,9 @@ def reprocess_ticket(item_id: int):
                 logger.exception("gagal membuang row baru %s", new_result_id)
         try:
             item = crud.get_reprocess_item(db, item_id)
-            if item is not None:
+            # Item yang sudah di-kill tidak ditimpa: catatan "dihentikan paksa" itulah
+            # penjelasan yang benar, bukan error yang timbul karena row-nya dibuang.
+            if item is not None and item.status == "processing":
                 crud.update_reprocess_item(
                     db, item_id, status="failed", error_message=str(exc)[:2000],
                     new_result_id=None, finished_at=_utcnow(),
