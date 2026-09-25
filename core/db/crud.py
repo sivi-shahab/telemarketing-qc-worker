@@ -3163,17 +3163,48 @@ def list_open_reprocess_jobs(db: Session, limit: int = 50) -> list[ReprocessJob]
     )
 
 
+def _kill_reprocess_items(db: Session, items, username: str = None) -> list[int]:
+    """Tutup item yang belum selesai; SATU aturan untuk kill per job & per tiket.
+
+    * ``pending``    -> ``skipped``
+    * ``processing`` -> ``failed``; row BARU yang setengah jadi dibuang, row LAMA
+      tidak disentuh (tiket tidak pernah berakhir tanpa hasil)
+
+    Mengembalikan id item ``processing`` yang dihentikan. Commit dilakukan di sini;
+    status job diurus pemanggil SEBELUM memanggil fungsi ini.
+    """
+    now = datetime.now()
+    who = username or "admin"
+    killed = []
+    new_ids = []
+    for item in items:
+        if item.status == "processing":
+            killed.append(item.id)
+            if item.new_result_id:
+                new_ids.append(str(item.new_result_id))
+            item.status = "failed"
+            item.error_message = f"Dihentikan paksa (kill) oleh {who}."
+            item.new_result_id = None
+        elif item.status == "pending":
+            item.status = "skipped"
+        else:
+            continue
+        item.finished_at = now
+    db.commit()
+    # Setelah item-nya tidak lagi menunjuk ke row baru. Row LAMA ada di
+    # ``old_result_ids`` dan tidak pernah masuk daftar ini.
+    delete_results_by_ids(db, new_ids)
+    return killed
+
+
 def kill_reprocess_job(db: Session, job_id: str, username: str = None) -> list[int]:
     """Hentikan PAKSA sebuah job: semua item yang belum selesai ditutup sekarang.
 
     Beda dengan :func:`cancel_reprocess_job` yang membiarkan item ``processing``
     selesai — itu benar selama worker-nya hidup, tetapi item ``processing`` tidak
     pernah kedaluwarsa, jadi worker yang mati/hang mengunci tiketnya selamanya.
-
-    * ``pending``    -> ``skipped``
-    * ``processing`` -> ``failed``; row BARU yang setengah jadi dibuang, row LAMA
-      tidak disentuh (tiket tidak pernah berakhir tanpa hasil)
-    * job            -> ``cancelled`` + ``finished_at``
+    Item ditutup lewat :func:`_kill_reprocess_items`; job -> ``cancelled`` +
+    ``finished_at``.
 
     Mengembalikan id item ``processing`` yang dihentikan — pemanggil memakainya
     untuk menghentikan task Celery-nya. Worker yang ternyata masih hidup melihat
@@ -3183,11 +3214,7 @@ def kill_reprocess_job(db: Session, job_id: str, username: str = None) -> list[i
     job = get_reprocess_job(db, job_id)
     if job is None:
         return []
-    now = datetime.now()
-    who = username or "admin"
-    killed = []
-    new_ids = []
-    for item in (
+    items = (
         db.query(ReprocessJobItem)
         .filter(
             ReprocessJobItem.job_id == job.id,
@@ -3195,25 +3222,59 @@ def kill_reprocess_job(db: Session, job_id: str, username: str = None) -> list[i
         )
         .order_by(ReprocessJobItem.id)
         .all()
-    ):
-        if item.status == "processing":
-            killed.append(item.id)
-            if item.new_result_id:
-                new_ids.append(str(item.new_result_id))
-            item.status = "failed"
-            item.error_message = f"Dihentikan paksa (kill) oleh {who}."
-            item.new_result_id = None
-        else:
-            item.status = "skipped"
-        item.finished_at = now
+    )
     if job.status == "running":
         job.status = "cancelled"
-    job.finished_at = now
-    db.commit()
-    # Setelah item-nya tidak lagi menunjuk ke row baru. Row LAMA ada di
-    # ``old_result_ids`` dan tidak pernah masuk daftar ini.
-    delete_results_by_ids(db, new_ids)
+    job.finished_at = datetime.now()
+    killed = _kill_reprocess_items(db, items, username)
     db.refresh(job)
+    return killed
+
+
+def open_reprocess_items_for_ticket(db: Session, ticket_id: str) -> list[ReprocessJobItem]:
+    """Item ``pending``/``processing`` sebuah ticket id pada job yang belum tertutup.
+
+    Sengaja TANPA ambang umur milik :func:`_reprocess_item_active_clause`: yang
+    dicari justru termasuk yang tersangkut, supaya bisa di-kill.
+    """
+    tid = (ticket_id or "").strip()
+    if not tid:
+        return []
+    return (
+        db.query(ReprocessJobItem)
+        .join(ReprocessJob, ReprocessJob.id == ReprocessJobItem.job_id)
+        .filter(
+            ReprocessJobItem.ticket_id == tid,
+            ReprocessJobItem.status.in_(("pending", "processing")),
+            ReprocessJob.finished_at.is_(None),
+        )
+        .order_by(ReprocessJobItem.id)
+        .all()
+    )
+
+
+def kill_reprocess_ticket(db: Session, ticket_id: str, username: str = None) -> list[int]:
+    """Hentikan PAKSA reproses SATU ticket id (tombol Kill per baris di Results).
+
+    Hanya item tiket ini yang ditutup (lewat :func:`_kill_reprocess_items`) —
+    kalau tiketnya bagian dari job massal, tiket lain di job itu jalan terus.
+    Job ``scope="ticket"`` ikut ditutup sebagai ``cancelled``; job massal
+    ditutup oleh :func:`finish_reprocess_job_if_complete` seperti biasa begitu
+    item terakhirnya selesai.
+
+    Mengembalikan id item ``processing`` yang dihentikan. Daftar kosong bisa
+    berarti tidak ada yang terbuka ATAU hanya ada item ``pending`` — pemanggil
+    yang butuh membedakannya memeriksa :func:`open_reprocess_items_for_ticket`.
+    """
+    items = open_reprocess_items_for_ticket(db, ticket_id)
+    job_ids = sorted({str(it.job_id) for it in items})
+    for job_id in job_ids:
+        job = get_reprocess_job(db, job_id)
+        if job is not None and job.scope == "ticket" and job.status == "running":
+            job.status = "cancelled"
+    killed = _kill_reprocess_items(db, items, username)
+    for job_id in job_ids:
+        finish_reprocess_job_if_complete(db, job_id)
     return killed
 
 
