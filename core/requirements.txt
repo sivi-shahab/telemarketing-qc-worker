@@ -15,3 +15,6 @@ pypdfium2
 # satu halaman sebelum masuk jalur OCR yang hanya menerima PDF). Dependensi
 # langsung tidak boleh bergantung pada dependensi transitif paket lain.
 pillow
+# Cache DWH bersama (L2) di services/data_dwh.py — sebelumnya hanya transitif
+# lewat celery[redis].
+redis

@@ -27,7 +27,8 @@ ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
 
 COPY core/requirements.txt   /tmp/core-requirements.txt
 COPY worker/requirements.txt /tmp/worker-requirements.txt
-RUN pip install --no-cache-dir -r /tmp/core-requirements.txt -r /tmp/worker-requirements.txt
+COPY worker/constraints.txt /tmp/constraints.txt
+RUN pip install --no-cache-dir -c /tmp/constraints.txt -r /tmp/core-requirements.txt -r /tmp/worker-requirements.txt
 
 # Isi core di-COPY DATAR ke /app supaya import tetap `from db import crud`.
 # `prompt/` ikut karena compliance/documents.py me-resolve-nya lewat

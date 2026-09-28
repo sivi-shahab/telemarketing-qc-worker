@@ -32,7 +32,17 @@ Konfigurasi (env var):
   - DWH_API_BASE_URL      base URL API Aplikasi A (default "http://localhost:8002")
   - DWH_API_TIMEOUT_SEC   timeout per request (default 10)
   - DWH_API_CACHE_TTL_SEC TTL cache in-memory App B per result_id (default 300)
+  - DWH_REDIS_TTL_SEC     TTL cache Redis untuk data yang DITEMUKAN (default 30 hari)
+  - DWH_REDIS_NEG_TTL_SEC TTL cache Redis untuk "tidak ada di DWH"/404 (default 1 jam)
+  - REDIS_URL             Redis bersama (sama dengan broker Celery); kosong = tanpa L2
+
+[28 September 2026] CACHE DUA LAPIS: L1 = memori per proses (di atas), L2 = Redis
+bersama. Tanpa L2 halaman Results menembak ±300 request DWH per load (5–28 detik):
+L1 hanya hidup DWH_API_CACHE_TTL_SEC dan terpisah per proses gunicorn. Worker
+evaluasi memanggil ``set_redis_read(False)``: ia selalu mengambil data SEGAR (reproses
+justru dilakukan karena data TMS berubah) lalu memperbarui L2 untuk halaman.
 """
+import json
 import logging
 import os
 import time
@@ -72,6 +82,75 @@ _fail_until: dict[str, float] = {}
 # result_id -> (monotonic_timestamp, bundle)
 _cache: dict[str, tuple[float, dict]] = {}
 _cache_lock = Lock()
+
+# --- L2: Redis bersama -------------------------------------------------------
+REDIS_URL = os.getenv("REDIS_URL", "").strip()
+REDIS_TTL_SEC = int(os.getenv("DWH_REDIS_TTL_SEC", str(30 * 24 * 3600)))
+# "Tidak ada di DWH" disimpan singkat: tiket yang diupload sebelum Job 3 App A
+# mengisi datanya akan punya data beberapa saat kemudian.
+REDIS_NEG_TTL_SEC = int(os.getenv("DWH_REDIS_NEG_TTL_SEC", "3600"))
+_REDIS_KEY_PREFIX = "dwh:bundle:v1:"
+# Timeout pendek + jeda sesudah gagal: Redis yang bermasalah tidak boleh membuat
+# halaman menunggu per cid — cukup jatuh ke HTTP seperti sebelum ada L2.
+_REDIS_TIMEOUT_SEC = 0.5
+_REDIS_RETRY_AFTER_SEC = 30.0
+_REDIS_READ = True
+_redis_state = {"client": None, "down_until": 0.0}
+
+
+def set_redis_read(enabled: bool) -> None:
+    """False untuk worker evaluasi: jangan BACA L2 (selalu segar), tetap TULIS."""
+    global _REDIS_READ
+    _REDIS_READ = bool(enabled)
+
+
+def _redis_client():
+    if not REDIS_URL or time.monotonic() < _redis_state["down_until"]:
+        return None
+    if _redis_state["client"] is None:
+        import redis  # ikut terpasang lewat celery[redis]; dideklarasikan di requirements
+        _redis_state["client"] = redis.Redis.from_url(
+            REDIS_URL, socket_timeout=_REDIS_TIMEOUT_SEC,
+            socket_connect_timeout=_REDIS_TIMEOUT_SEC,
+        )
+    return _redis_state["client"]
+
+
+def _redis_key(result_id: str) -> str:
+    return _REDIS_KEY_PREFIX + result_id
+
+
+def _redis_failed(exc: Exception) -> None:
+    logger.warning("[data-dwh] Redis tidak bisa dipakai (%s) -- jatuh ke HTTP %.0f detik",
+                   exc, _REDIS_RETRY_AFTER_SEC)
+    _redis_state["down_until"] = time.monotonic() + _REDIS_RETRY_AFTER_SEC
+
+
+def _redis_get(result_id: str) -> Optional[dict]:
+    try:
+        client = _redis_client()
+        raw = client.get(_redis_key(result_id)) if client is not None else None
+    except Exception as exc:  # noqa: BLE001 — Redis opsional
+        _redis_failed(exc)
+        return None
+    if raw is None:
+        return None
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return None
+    return {"cashline": data.get("cashline"), "customer": data.get("customer")}
+
+
+def _redis_put(result_id: str, bundle: dict) -> None:
+    found = bundle.get("cashline") is not None or bundle.get("customer") is not None
+    try:
+        client = _redis_client()
+        if client is not None:
+            client.set(_redis_key(result_id), json.dumps(bundle),
+                       ex=REDIS_TTL_SEC if found else REDIS_NEG_TTL_SEC)
+    except Exception as exc:  # noqa: BLE001 — Redis opsional
+        _redis_failed(exc)
 
 
 def _cache_get(result_id: str) -> Optional[dict]:
@@ -159,12 +238,19 @@ def fetch_bundle_checked(result_id: str) -> tuple[dict, bool]:
         if _fail_until.get(rid, 0.0) > time.monotonic():
             return dict(_EMPTY_BUNDLE), False
 
+    if _REDIS_READ:
+        shared = _redis_get(rid)
+        if shared is not None:
+            _cache_put(rid, shared)
+            return shared, True
+
     # --- 1. Coba endpoint CACHE (database App A, cepat) dulu ---
     cache_url = DWH_API_BASE_URL + _API_PATH_CACHE.format(result_id=rid)
     bundle, status = _fetch_from_url(cache_url)
     if bundle is not None:
         # Cache hit -- langsung pakai, TIDAK perlu panggil endpoint asli.
         _cache_put(rid, bundle)
+        _redis_put(rid, bundle)
         return bundle, True
 
     if status is not None and status != 404:
@@ -194,11 +280,14 @@ def fetch_bundle_checked(result_id: str) -> tuple[dict, bool]:
         bundle = dict(_EMPTY_BUNDLE)
 
     _cache_put(rid, bundle)
+    _redis_put(rid, bundle)
     return bundle, True
 
 
 def clear_cache() -> None:
-    """Kosongkan cache in-memory App B (dipakai di test / setelah data direfresh)."""
+    """Kosongkan cache in-memory App B (dipakai di test / setelah data direfresh).
+    L2 Redis tidak disentuh — ia bersama untuk semua proses."""
     with _cache_lock:
         _cache.clear()
         _fail_until.clear()
+    _redis_state["down_until"] = 0.0
