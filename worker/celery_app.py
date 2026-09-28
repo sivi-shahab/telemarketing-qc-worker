@@ -3,6 +3,13 @@ from datetime import timedelta
 
 from celery import Celery
 
+from services import data_dwh
+
+# Evaluasi selalu memakai data DWH segar (reproses dilakukan justru karena data TMS
+# berubah); cache Redis 30 hari hanya untuk halaman. Worker tetap MENULIS ke Redis
+# sehingga halaman ikut segar sesudah tiket dinilai (28 September 2026).
+data_dwh.set_redis_read(False)
+
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6378/0")
 CELERY_CONCURRENCY = int(os.getenv("CELERY_CONCURRENCY", "4"))
 # Masa simpan hasil task (celery-task-meta-*) di Redis. Bawaan Celery 1 hari;
