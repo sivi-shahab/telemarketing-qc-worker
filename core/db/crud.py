@@ -220,11 +220,13 @@ def update_result_status(
 # menulis ``failed`` — halaman Results menampilkannya "sedang diproses" selamanya
 # (kasus 28 September 2026: 56 tiket Cashline).
 #
-# 60 menit = ``task_time_limit`` worker (3000 s) + 10 menit. Selama batas keras itu
-# belum lewat, worker-nya mungkin masih hidup; sesudahnya task pasti sudah dihentikan
-# Celery. Task yang dikirim ulang (acks_late) menulis ``started_at`` baru, jadi tidak
-# ikut tertutup.
-STALE_PROCESSING_AFTER = timedelta(minutes=60)
+# 55 menit: di atas ``task_time_limit`` worker (3000 s) — selama batas keras itu
+# belum lewat, worker-nya mungkin masih hidup — dan di bawah ``visibility_timeout``
+# Redis (3600 s). Task yang tak pernah di-ack dikirim ulang tiap 60 menit dan
+# ``started_at``-nya ditulis ulang; ambang 60 menit persis membuat baris macet selalu
+# di-reset sebelum sempat dianggap basi (28 September 2026: pembersih mendapati 0 dari
+# 40 baris yang di-reset worker kube tepat 60 menit kemudian).
+STALE_PROCESSING_AFTER = timedelta(minutes=55)
 
 
 def fail_stale_processing_results(db: Session, now: datetime = None) -> list:
