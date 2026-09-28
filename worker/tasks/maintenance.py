@@ -37,3 +37,16 @@ def fail_stale_processing_results():
         logger.warning("%d result processing basi ditutup jadi failed: %s",
                        len(ids), ", ".join(ids))
     return {"failed": len(ids)}
+
+
+# Snapshot Statistics global disegarkan proaktif (28 September 2026): API sudah
+# menyajikan snapshot lama sambil menghitung ulang di latar, tugas ini membuat angka
+# global hampir selalu terbaru. Bila data tidak berubah hanya signature yang dihitung.
+@celery_app.task(name="worker.tasks.maintenance.refresh_stats_snapshot",
+                 ignore_result=True)
+def refresh_stats_snapshot():
+    db = _session_factory()()
+    try:
+        crud.get_or_build_stats_snapshot(db)
+    finally:
+        db.close()

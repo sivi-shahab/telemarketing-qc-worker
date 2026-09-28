@@ -1,6 +1,8 @@
 import copy
 import hashlib
 import json
+import logging
+import threading
 import uuid
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
@@ -1254,6 +1256,7 @@ def _stats_signature(db: Session) -> str:
 
 def get_or_build_stats_snapshot(
     db: Session, force: bool = False, scope_key: str = "", compute_fn=None,
+    session_factory=None,
 ) -> dict:
     """Return the Statistics dashboard payload, recomputing it only when the
     underlying data changes (auto-invalidating cache).
@@ -1271,6 +1274,12 @@ def get_or_build_stats_snapshot(
     same data signature = same cached row, instead of recomputing on every
     request (added 17 September 2026 — scoped roles used to always bypass the
     cache).
+
+    ``compute_fn(session)`` menerima sesi DB (bukan menangkap sesi request), supaya
+    bisa dijalankan di latar. ``session_factory`` (28 September 2026): bila diberikan
+    dan snapshot lama ber-versi format sama sudah ada, snapshot lama dikembalikan
+    SEGERA dan snapshot baru dihitung di thread (``_start_snapshot_refresh``).
+    Snapshot yang belum ada, versi format berbeda, atau ``force`` tetap sinkron.
     """
     sig = _stats_signature(db)
     latest = (
@@ -1287,13 +1296,23 @@ def get_or_build_stats_snapshot(
     ):
         return latest.payload
 
-    if compute_fn is not None:
-        payload = compute_fn()
-    else:
-        from compliance.stats_aggregate import compute_stats_snapshot
-        payload = compute_stats_snapshot(db)
-    payload["_signature"] = sig
+    if (
+        session_factory is not None
+        and not force
+        and latest is not None
+        and isinstance(latest.payload, dict)
+        and _same_snapshot_format(latest.payload.get("_signature"), sig)
+    ):
+        _start_snapshot_refresh(session_factory, scope_key, compute_fn, sig)
+        return latest.payload
 
+    payload = _compute_stats_payload(db, compute_fn)
+    payload["_signature"] = sig
+    return _store_stats_snapshot(db, scope_key, payload)
+
+
+def _store_stats_snapshot(db: Session, scope_key: str, payload: dict) -> dict:
+    """Simpan ``payload`` sebagai snapshot hari ini untuk ``scope_key``."""
     # Keep one row per (WIB day, scope) — overwrite today's on change; new day
     # or new scope => new row.
     today = _wib_today_str()
@@ -1327,6 +1346,56 @@ def get_or_build_stats_snapshot(
         if row is not None and isinstance(row.payload, dict):
             return row.payload
     return payload
+
+
+# --- Hitung ulang snapshot di latar belakang (28 September 2026) -------------
+# Menghitung ulang snapshot Statistics memakan ±6,5 detik (CPU). Dengan
+# ``session_factory`` pemanggil (API) langsung mendapat snapshot lama selama versi
+# formatnya sama, sementara snapshot baru dihitung di thread dengan sesi DB sendiri.
+# Kunci Redis per scope mencegah dua proses gunicorn menghitung scope yang sama.
+_snapshot_logger = logging.getLogger(__name__)
+_SNAPSHOT_REFRESH_LOCK_SEC = 600
+
+
+def _same_snapshot_format(old_sig, new_sig) -> bool:
+    """Versi format (bagian pertama signature, mis. ``v25``) sama -> payload lama
+    aman disajikan sementara; beda versi berarti bentuk payload bisa berbeda."""
+    if not isinstance(old_sig, str) or not isinstance(new_sig, str):
+        return False
+    return old_sig.split("|", 1)[0] == new_sig.split("|", 1)[0]
+
+
+def _compute_stats_payload(db: Session, compute_fn) -> dict:
+    if compute_fn is not None:
+        return compute_fn(db)
+    from compliance.stats_aggregate import compute_stats_snapshot
+    return compute_stats_snapshot(db)
+
+
+def _refresh_snapshot_job(session_factory, scope_key: str, compute_fn, sig: str) -> None:
+    session = session_factory()
+    try:
+        payload = _compute_stats_payload(session, compute_fn)
+        payload["_signature"] = sig
+        _store_stats_snapshot(session, scope_key, payload)
+    finally:
+        session.close()
+
+
+def _start_snapshot_refresh(session_factory, scope_key: str, compute_fn, sig: str) -> None:
+    key = f"lock:stats-snapshot:{scope_key or 'global'}"
+    if not redis_cache.acquire(key, ttl_sec=_SNAPSHOT_REFRESH_LOCK_SEC):
+        return  # proses lain sedang menghitung scope ini
+
+    def _run():
+        try:
+            _refresh_snapshot_job(session_factory, scope_key, compute_fn, sig)
+        except Exception:  # noqa: BLE001 — request berikutnya akan mencoba lagi
+            _snapshot_logger.exception("hitung ulang snapshot %r di latar gagal", scope_key)
+        finally:
+            redis_cache.release(key)
+
+    threading.Thread(target=_run, daemon=True, name=f"snapshot:{scope_key[:24]}").start()
 
 
 def invalidate_scoped_stats_snapshots(db: Session) -> int:
