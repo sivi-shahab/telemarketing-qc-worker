@@ -941,10 +941,10 @@ def _prune_old_stats_snapshots(db: Session) -> None:
 def now_wib() -> datetime:
     """Jam dinding WIB saat ini, naive.
 
-    Pakai ini — bukan ``datetime.now()`` — setiap kali "sekarang" dibandingkan dengan
-    kolom yang diisi DB (``server_default=func.now()``, TimeZone Postgres =
-    Asia/Jakarta) atau dengan ``submit_time`` TMS. Container api/worker berjalan dalam
-    UTC, jadi ``datetime.now()`` di sana tertinggal 7 jam (28 September 2026).
+    Hanya untuk "sekarang" yang dibandingkan dengan data berjam WIB dari HULU, mis.
+    ``submit_time`` TMS (tenggat H+2). Kolom milik DB ini disimpan UTC (sesi dipaksa
+    ``timezone=UTC``, migrasi 0060) — bandingkan dengan ``datetime.utcnow()``.
+    ``datetime.now()`` jangan dipakai: di container hasilnya UTC, bukan WIB.
     """
     from datetime import timezone
     from zoneinfo import ZoneInfo
@@ -3081,7 +3081,7 @@ def _reprocess_item_active_clause():
         and_(
             ReprocessJobItem.status == "pending",
             ReprocessJob.status == "running",
-            ReprocessJob.created_at >= now_wib() - REPROCESS_STALE_AFTER,
+            ReprocessJob.created_at >= datetime.utcnow() - REPROCESS_STALE_AFTER,
         ),
     )
 

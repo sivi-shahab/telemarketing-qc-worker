@@ -111,13 +111,16 @@ class WorkerSettings(BaseSettings):
 
     @property
     def db_connect_args(self) -> dict:
-        """connect_args untuk create_engine — mengarahkan search_path.
+        """connect_args untuk create_engine — timezone sesi + search_path.
 
+        timezone=UTC: server_default=now() harus menulis UTC seperti ``_utcnow()``
+        worker; Postgres produksi ber-TimeZone Asia/Jakarta (migrasi 0060 di repo api).
         Model tidak menyebut schema sama sekali; kosong = 'public' (DB lokal).
         """
-        if not self.postgres_schema:
-            return {}
-        return {"options": f"-csearch_path={self.postgres_schema},public"}
+        options = "-ctimezone=UTC"
+        if self.postgres_schema:
+            options += f" -csearch_path={self.postgres_schema},public"
+        return {"options": options}
 
 
 @lru_cache()
