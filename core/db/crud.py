@@ -938,6 +938,20 @@ def _prune_old_stats_snapshots(db: Session) -> None:
     db.query(StatsSnapshot).filter(StatsSnapshot.snapshot_date < cutoff).delete(synchronize_session=False)
 
 
+def now_wib() -> datetime:
+    """Jam dinding WIB saat ini, naive.
+
+    Pakai ini — bukan ``datetime.now()`` — setiap kali "sekarang" dibandingkan dengan
+    kolom yang diisi DB (``server_default=func.now()``, TimeZone Postgres =
+    Asia/Jakarta) atau dengan ``submit_time`` TMS. Container api/worker berjalan dalam
+    UTC, jadi ``datetime.now()`` di sana tertinggal 7 jam (28 September 2026).
+    """
+    from datetime import timezone
+    from zoneinfo import ZoneInfo
+
+    return datetime.now(timezone.utc).astimezone(ZoneInfo("Asia/Jakarta")).replace(tzinfo=None)
+
+
 def _wib_today_str() -> str:
     """Today's Asia/Jakarta (WIB) calendar date as ``"YYYY-MM-DD"``."""
     from datetime import timezone
@@ -3067,7 +3081,7 @@ def _reprocess_item_active_clause():
         and_(
             ReprocessJobItem.status == "pending",
             ReprocessJob.status == "running",
-            ReprocessJob.created_at >= datetime.now() - REPROCESS_STALE_AFTER,
+            ReprocessJob.created_at >= now_wib() - REPROCESS_STALE_AFTER,
         ),
     )
 
