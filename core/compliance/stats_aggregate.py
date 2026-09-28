@@ -402,7 +402,7 @@ def _doc_sla_expired(submit_time, now=None) -> bool:
     dt = _parse_submit_datetime(submit_time)
     if dt is None:
         return True
-    now = now or datetime.now()
+    now = now or crud.now_wib()
     return now >= dt + timedelta(hours=SLA_HOURS)
 
 
@@ -487,7 +487,7 @@ def risk_tally(db, results, eval_by_id: dict, appeal_map: dict) -> dict:
     mdocs = _missing_docs_map(db, results, eval_by_id)
     docs_by_rid = crud.document_ocr_by_result(db, [str(r.id) for r in results])
     doc_map = document_status_map(db, results)
-    _now = datetime.now()
+    _now = crud.now_wib()
     for r in results:
         rid = str(r.id)
         rows = _error_code_rows(
@@ -910,7 +910,7 @@ def ai_status_for_result(db, result) -> "str | None":
         appeals,
         qc_req,
         mdocs.get(rid, False),
-        _doc_sla_expired(submit_times.get(result.id), datetime.now()),
+        _doc_sla_expired(submit_times.get(result.id), crud.now_wib()),
         document_status_map(db, [result]).get(rid),
         data_gap=gaps.get(rid),
     )
@@ -947,7 +947,7 @@ def ai_status_map(db, results) -> dict:
     submit_times = _submit_time_map(db, rows)
     gaps = data_gap_map(db, rows)
     doc_map = document_status_map(db, rows)
-    now = datetime.now()
+    now = crud.now_wib()
     return {
         rid: _result_ai_status(
             eval_by_id.get(rid),
@@ -1079,7 +1079,7 @@ def document_status_map(
         return {}
     types_by_rid = _proven_doc_types(db, ids, types_by_rid, ocr_by_rid)
     submits = _submit_time_map(db, results, agent_index)
-    now = datetime.now()
+    now = crud.now_wib()
     return {
         str(r.id): (set(types_by_rid.get(str(r.id), set())),
                     _doc_sla_expired(submits.get(r.id), now))
@@ -1212,7 +1212,7 @@ def compute_scoped_overview(db, customer_ids) -> dict:
     mdocs = _missing_docs_map(db, done_results, eval_by_id)
     gaps = data_gap_map(db, done_results)
     submit_times = _submit_time_map(db, done_results)
-    _now = datetime.now()
+    _now = crud.now_wib()
     total_eval = total_err = approve = ret = pending_ai = 0
     m_pass = m_fail = m_pending = m_by_human = 0
     doc_map = document_status_map(db, done_results)
@@ -1326,7 +1326,7 @@ def compute_failure_reasons(db, campaign: str = None, campaigns: list = None) ->
     mdocs = _missing_docs_map(db, done_results, eval_by_id)
     gaps = data_gap_map(db, done_results)
     submit_times = _submit_time_map(db, done_results)
-    _now = datetime.now()
+    _now = crud.now_wib()
 
     total_eval = 0
     total_submissions = 0                              # SELURUH tiket evaluable (penyebut konteks)
@@ -1656,7 +1656,7 @@ def compute_failure_reasons_hierarchy(db, campaign: str = None, campaigns: list 
     mdocs = _missing_docs_map(db, done_results, eval_by_id)
     gaps = data_gap_map(db, done_results)
     submit_times = _submit_time_map(db, done_results)
-    _now = datetime.now()
+    _now = crud.now_wib()
 
     # cid -> agent_id, lalu agent_id -> nama/TL/AM (database sales).
     # [FIX] Sumbernya crud.cashline_agent_index() (snapshot reference_data di
@@ -1869,7 +1869,7 @@ def _iter_export_tickets(db, campaign: str = None, campaigns: list = None):
     gaps = data_gap_map(db, done_results)
     submit_times = _submit_time_map(db, done_results)
     doc_map = document_status_map(db, done_results)
-    now = datetime.now()
+    now = crud.now_wib()
 
     for r in done_results:
         rid = str(r.id)
@@ -2119,7 +2119,7 @@ def compute_ticket_export(db, results) -> dict:
     snap_doc_map = document_status_map(db, done_results)
     sales_map = active_sales_map(db)
     verif_doc_map = document_status_map(db, results)
-    now = datetime.now()
+    now = crud.now_wib()
 
     rows = []
     for r in results:
@@ -2563,7 +2563,7 @@ def compute_ai_status_timeseries(db, customer_ids, campaign, granularity, start,
     mdocs = _missing_docs_map(db, done_in_range, eval_by_id)
     gaps = data_gap_map(db, done_in_range)
     submit_times = _submit_time_map(db, done_in_range)
-    _now = datetime.now()
+    _now = crud.now_wib()
 
     # New joiner, tolerable, dan kesesuaian jenis dokumen: bahan tally Risk Base
     # per bucket (indeks 10).
@@ -2720,7 +2720,7 @@ def compute_team_agents(db, agent_ids) -> list:
         gaps = data_gap_map(db, done_results)
         submit_by_rid = _submit_time_map(db, done_results)
         docs_by_rid = crud.document_ocr_by_result(db, [str(r.id) for r in done_results])
-        _now = datetime.now()
+        _now = crud.now_wib()
         # submissions = evaluated (evaluable done) tickets; errors = AI Status RETURN;
         # H/M/L/N/O = satu risk base tertinggi per tiket (pembilang Error Rate).
         for rid in done_ids:
@@ -3128,7 +3128,7 @@ def compute_stats_snapshot(db, customer_ids=None, roster_uids=None) -> dict:
     total_err = 0
     approve = ret = pending_ai = 0
     m_pass = m_fail = m_pending = m_by_human = 0
-    _now = datetime.now()
+    _now = crud.now_wib()
 
     # All-status counts per campaign (pending/processing/done/failed) so the
     # campaign-filtered Overview KPIs cover non-done tickets too, mirroring get_stats.
