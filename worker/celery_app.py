@@ -1,9 +1,13 @@
 import os
+from datetime import timedelta
 
 from celery import Celery
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6378/0")
 CELERY_CONCURRENCY = int(os.getenv("CELERY_CONCURRENCY", "4"))
+# Masa simpan hasil task (celery-task-meta-*) di Redis. Bawaan Celery 1 hari;
+# dinaikkan ke 30 hari atas permintaan pemilik sistem (28 September 2026).
+CELERY_RESULT_EXPIRES_DAYS = int(os.getenv("CELERY_RESULT_EXPIRES_DAYS", "30"))
 
 celery_app = Celery(
     "bank_qa",
@@ -24,6 +28,7 @@ celery_app.conf.update(
     timezone="Asia/Jakarta",
     enable_utc=True,
     worker_concurrency=CELERY_CONCURRENCY,
+    result_expires=timedelta(days=CELERY_RESULT_EXPIRES_DAYS),
     task_acks_late=True,
     task_reject_on_worker_lost=True,
     # Batas keras dinaikkan dari 1800 -> 3000 (10 September 2026) untuk alur penilaian

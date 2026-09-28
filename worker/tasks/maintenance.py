@@ -23,7 +23,10 @@ def _session_factory():
     return sessionmaker(bind=engine, autocommit=False, autoflush=False)
 
 
-@celery_app.task(name="worker.tasks.maintenance.fail_stale_processing_results")
+# ignore_result: jalan tiap 2 menit; dengan result_expires 30 hari hasilnya saja akan
+# menumpuk ±21.600 key di Redis yang tidak pernah dibaca siapa pun.
+@celery_app.task(name="worker.tasks.maintenance.fail_stale_processing_results",
+                 ignore_result=True)
 def fail_stale_processing_results():
     db = _session_factory()()
     try:
