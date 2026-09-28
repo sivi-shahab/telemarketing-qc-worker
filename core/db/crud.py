@@ -1,5 +1,6 @@
 import copy
 import hashlib
+import json
 import uuid
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
@@ -8,7 +9,7 @@ from threading import Lock
 from typing import Iterable, Optional
 
 from sqlalchemy.orm import Session
-from sqlalchemy import and_, func, desc, or_
+from sqlalchemy import Text, and_, cast, func, desc, or_
 
 
 # [FIX] ``AscendCustp`` dan ``TmsCashline`` DIHAPUS dari daftar import: kedua tabel
@@ -37,6 +38,7 @@ from db.models import (
 # Reference data (CASHLINE / CARD HOLDER) sekarang dari DWH API (Aplikasi A),
 # bukan lagi tabel DB -> lihat services/data_dwh.py.
 from services import data_dwh
+from services import redis_cache
 
 
 # ---------------------------------------------------------------------------
@@ -258,23 +260,58 @@ def fail_stale_processing_results(db: Session, now: datetime = None) -> list:
     return [str(r.id) for r in rows]
 
 
+def _result_json_key(row_id) -> str:
+    return f"rj:v1:{row_id}"
+
+
+def _result_json_texts(db: Session, row_ids: list) -> dict:
+    """``{row_id: teks JSON}`` langsung dari Postgres (tanpa parse ke dict)."""
+    if not row_ids:
+        return {}
+    return {
+        str(row_id): text
+        for row_id, text in db.query(ResultData.id, cast(ResultData.result_json, Text))
+        .filter(ResultData.id.in_(row_ids))
+        .all()
+    }
+
+
 def result_json_map(db: Session, result_ids: list[str]) -> dict:
-    """Latest result_json per result_id, in one batched query (no N+1).
-    Mirrors the snapshot builder: rows come back newest-first, so the first seen
-    per id is the latest. Ids without result data are simply absent from the map.
+    """Latest result_json per result_id (no N+1). Ids without result data are
+    simply absent from the map.
+
+    [28 September 2026] Lewat cache Redis per id BARIS ``result_data``: baris itu
+    tidak pernah diubah sesudah tersimpan (reproses menambah baris baru), jadi JSON-nya
+    aman di-cache 30 hari. Postgres hanya dipakai untuk memilih baris terbaru per
+    result (metadata, ringan) dan untuk baris yang belum ada di cache. Sebelumnya
+    Pending Check/Statistics mengambil 18 MB JSON dari Postgres remote tiap kali
+    (3,6–5,5 detik). Setiap panggilan mengembalikan dict baru (hasil parse), jadi
+    pemanggil boleh mengubahnya.
     """
     if not result_ids:
         return {}
     uuids = [uuid.UUID(str(rid)) for rid in result_ids]
-    out: dict = {}
-    for rid, rjson in (
-        db.query(ResultData.result_id, ResultData.result_json)
+    latest: dict = {}
+    for rid, row_id in (
+        db.query(ResultData.result_id, ResultData.id)
         .filter(ResultData.result_id.in_(uuids))
         .order_by(desc(ResultData.created_at))
         .all()
     ):
-        out.setdefault(str(rid), rjson)
-    return out
+        latest.setdefault(str(rid), str(row_id))
+    if not latest:
+        return {}
+
+    keys = {row_id: _result_json_key(row_id) for row_id in latest.values()}
+    cached = redis_cache.get_many(list(keys.values()))
+    texts = {row_id: cached[key] for row_id, key in keys.items() if key in cached}
+    missing = [row_id for row_id in keys if row_id not in texts]
+    if missing:
+        fetched = _result_json_texts(db, [int(r) for r in missing])
+        texts.update(fetched)
+        redis_cache.set_many({keys[row_id]: text for row_id, text in fetched.items()})
+
+    return {rid: json.loads(texts[row_id]) for rid, row_id in latest.items() if row_id in texts}
 
 
 def set_result_stage(db: Session, result_id: str, stage: str) -> None:
