@@ -13,6 +13,7 @@ celery_app = Celery(
         "worker.tasks.process_transcript",
         "worker.tasks.process_document",
         "worker.tasks.reprocess_ticket",
+        "worker.tasks.maintenance",
     ],
 )
 
@@ -44,4 +45,18 @@ celery_app.conf.update(
     # tertahan di antrean proses yang sudah penuh. 1 = ambil tugas baru hanya saat ada
     # slot kosong, supaya beban merata antar proses worker (17 September 2026).
     worker_prefetch_multiplier=1,
+    # Nilai bawaan Redis, ditulis eksplisit karena pembersih di bawah bergantung
+    # padanya: task yang belum di-ack dikirim ulang tiap selang ini, dan worker
+    # menulis started_at baru. crud.STALE_PROCESSING_AFTER + interval beat harus
+    # di bawah angka ini (dijaga tests/test_stale_processing_reaper.py).
+    broker_transport_options={"visibility_timeout": 3600},
+    # Dijalankan oleh service `beat` di docker-compose.yml (28 September 2026).
+    # Idempoten dan memakai SKIP LOCKED, jadi aman walau ada lebih dari satu beat
+    # yang mengarah ke DB yang sama.
+    beat_schedule={
+        "fail-stale-processing-results": {
+            "task": "worker.tasks.maintenance.fail_stale_processing_results",
+            "schedule": 120.0,
+        },
+    },
 )
