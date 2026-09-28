@@ -1,4 +1,4 @@
-# Compose repo worker: worker + flower saja.
+# Compose repo worker: worker + beat + flower.
 # Postgres/redis/minio ada di compose repo API — di sini TIDAK ada `depends_on`
 # ke mereka (beda compose file), digantikan `restart: unless-stopped` supaya
 # worker mencoba lagi sampai infra siap.
@@ -28,6 +28,12 @@ services:
   worker:
     <<: *worker-image
     command: celery -A worker.celery_app worker --loglevel=info --concurrency=${CELERY_CONCURRENCY:-8}
+
+  # Penjadwal periodik (beat_schedule di worker/celery_app.py) — cukup SATU
+  # replika. Ia hanya mengirim task ke antrean; yang mengerjakan tetap `worker`.
+  beat:
+    <<: *worker-image
+    command: celery -A worker.celery_app beat --loglevel=info --schedule=/tmp/celerybeat-schedule
 
   # Flower memakai image yang sama persis — cuma command-nya beda.
   flower:

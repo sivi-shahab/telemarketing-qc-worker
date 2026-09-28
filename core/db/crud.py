@@ -215,6 +215,47 @@ def update_result_status(
     return result
 
 
+# Result ``processing`` yang worker-nya mati (SIGKILL, OOM, pod/container diganti)
+# tidak pernah melewati ``except`` di ``process_transcript``, jadi tidak ada yang
+# menulis ``failed`` — halaman Results menampilkannya "sedang diproses" selamanya
+# (kasus 28 September 2026: 56 tiket Cashline).
+#
+# 60 menit = ``task_time_limit`` worker (3000 s) + 10 menit. Selama batas keras itu
+# belum lewat, worker-nya mungkin masih hidup; sesudahnya task pasti sudah dihentikan
+# Celery. Task yang dikirim ulang (acks_late) menulis ``started_at`` baru, jadi tidak
+# ikut tertutup.
+STALE_PROCESSING_AFTER = timedelta(minutes=60)
+
+
+def fail_stale_processing_results(db: Session, now: datetime = None) -> list:
+    """Tutup result ``processing`` yang basi jadi ``failed``; kembalikan id-nya.
+
+    ``started_at`` ditulis worker dalam UTC naive, jadi ``now`` default-nya UTC dari
+    Python — BUKAN ``func.now()``, karena zona waktu DB adalah WIB.
+
+    ``SKIP LOCKED``: baris yang sedang ditulis worker (lokal maupun worker lain yang
+    memakai DB yang sama) dilewati, dicoba lagi di putaran berikutnya.
+    """
+    if now is None:
+        now = datetime.utcnow()
+    rows = (
+        db.query(Result)
+        .filter(Result.status == "processing",
+                Result.started_at < now - STALE_PROCESSING_AFTER)
+        .with_for_update(skip_locked=True)
+        .all()
+    )
+    menit = int(STALE_PROCESSING_AFTER.total_seconds() // 60)
+    for r in rows:
+        r.status = "failed"
+        r.error_message = (
+            f"Proses terhenti di tahap '{r.current_stage or 'belum mulai'}' tanpa kabar "
+            f"lebih dari {menit} menit (worker kemungkinan mati). Silakan proses ulang."
+        )
+    db.commit()
+    return [str(r.id) for r in rows]
+
+
 def result_json_map(db: Session, result_ids: list[str]) -> dict:
     """Latest result_json per result_id, in one batched query (no N+1).
     Mirrors the snapshot builder: rows come back newest-first, so the first seen
