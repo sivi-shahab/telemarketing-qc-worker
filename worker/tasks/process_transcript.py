@@ -360,6 +360,17 @@ def process_transcript(result_id: str):
     started_at = _utcnow()
 
     try:
+        # 0. Pesan basi: row sudah ditutup (done, atau failed oleh pembersih
+        # processing basi). Jalur sah ke task ini hanya upload dan reproses, keduanya
+        # row ``pending`` — jadi ini pengiriman ulang Redis (visibility_timeout)
+        # sesudah worker mati. Membukanya lagi membuat row bolak-balik
+        # failed/processing tiap jam (worker kube, 28 September 2026).
+        result = crud.get_result(db, result_id)
+        if result is not None and result.status in ("done", "failed"):
+            logger.warning("result %s sudah %s — pesan dikirim ulang, dilewati",
+                           result_id, result.status)
+            return {"result_id": str(result_id), "status": "skipped"}
+
         # 1. mark processing
         crud.update_result_status(db, result_id, "processing", started_at=started_at)
 
