@@ -18,3 +18,6 @@ pillow
 # Cache DWH bersama (L2) di services/data_dwh.py — sebelumnya hanya transitif
 # lewat celery[redis].
 redis
+# Generate PPT Error Rate Update (compliance/ppt_error_rate.py, dipakai API;
+# ikut terpasang di worker karena core/ dibagi identik).
+python-pptx
