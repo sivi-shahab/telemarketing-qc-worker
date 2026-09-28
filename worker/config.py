@@ -104,8 +104,10 @@ class WorkerSettings(BaseSettings):
 
     @property
     def database_url(self) -> str:
+        # Driver EKSPLISIT: SQLAlchemy >= 2.1 memakai psycopg (v3) untuk
+        # "postgresql://" polos, padahal yang terpasang psycopg2-binary (28 Sep 2026).
         return (
-            f"postgresql://{self.postgres_user}:{self.postgres_password}"
+            f"postgresql+psycopg2://{self.postgres_user}:{self.postgres_password}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
         )
 

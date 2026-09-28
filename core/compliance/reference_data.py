@@ -104,14 +104,15 @@ CARDHOLDER_FIELD_ORDER = [
 # sedangkan "jenis-kartu-yang-dikehendaki" DWH sudah berisi nilai sejenis
 # ("Cashline Umum", 260 dari 261). Memindahnya berarti acuan selalu null.
 #
-# "mus_cc" sengaja TANPA kolom (sama dengan monolit): "status-log" ternyata
-# berarti REKAMAN VALID, bukan minat. Prompt (v82) mendefinisikan acuannya sama
-# dengan minat hasil ekstraksi LLM sendiri — placeholder yang selalu MATCH.
+# MUS pada Kartu Kredit non-Cashline (MUS CC) dipisah jadi campaign tersendiri di
+# luar Cashline pada 25 September 2026 (Bank Mega), sehingga tidak lagi ada field
+# "mus_cc" di sini maupun di blok CAMPAIGN INTEREST REFERENCE DATA yang dikirim
+# ke prompt.
 CAMPAIGN_INTEREST_SINGLE_COLS = {
     "mega_cashline": "jenis-kartu-yang-dikehendaki",
     "mega_ultima_shield": "pendaftaran-credit-shield",
 }
-CAMPAIGN_INTEREST_FIELD_ORDER = ["mega_cashline", "mega_ultima_shield", "mus_cc"]
+CAMPAIGN_INTEREST_FIELD_ORDER = ["mega_cashline", "mega_ultima_shield"]
 
 # --- Document OCR reference ("acuan") field maps ----------------------------
 DOC_KTP_HOME_ADDR_COLS = [

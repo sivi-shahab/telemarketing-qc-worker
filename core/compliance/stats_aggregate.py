@@ -1269,7 +1269,8 @@ def compute_scoped_overview(db, customer_ids) -> dict:
     }
 
 
-def compute_failure_reasons(db, campaign: str = None, campaigns: list = None) -> dict:
+def compute_failure_reasons(db, campaign: str = None, campaigns: list = None,
+                            date_start=None, date_end=None) -> dict:
     """Agregat 'Failure Reason' (menu Stats, tab untuk SPQ Head & Admin): kategori
     scorecard yang PALING SERING gagal beserta alasannya.
 
@@ -1309,8 +1310,28 @@ def compute_failure_reasons(db, campaign: str = None, campaigns: list = None) ->
 
     ``total_submissions`` — SELURUH tiket evaluable (sebelum penyaringan Not
     Qualified). Dikirim sebagai konteks populasi supaya KPI bisa berbunyi "9 dari 98";
-    ia BUKAN penyebut ``pct``, yang tetap memakai jumlah tiket Not Qualified."""
+    ia BUKAN penyebut ``pct``, yang tetap memakai jumlah tiket Not Qualified.
+
+    ``date_start``/``date_end`` (opsional, ``date`` objects, inklusif, 18 September
+    2026) membatasi ke tiket dalam jendela tanggal yang sama dengan filter di panel
+    "AI Status — per waktu" — kontrol yang sama juga dipasang di tab Failure Rate,
+    lihat ``compute_stats_snapshot``. Tanggal tiap tiket memakai aturan "chart date"
+    yang sama: TMS ``submit_time``, jatuh balik ke tanggal transkrip."""
     done_results = done_results_query(db, campaign, campaigns).all()
+    if date_start is not None or date_end is not None:
+        chart_dates = _submit_date_map(db, done_results)
+
+        def _in_window(r):
+            d = chart_dates.get(r.id) or _series_date(r)
+            if d is None:
+                return False
+            if date_start is not None and d < date_start:
+                return False
+            if date_end is not None and d > date_end:
+                return False
+            return True
+
+        done_results = [r for r in done_results if _in_window(r)]
     result_ids = [r.id for r in done_results]
     eval_by_id: dict = {}
     if result_ids:
@@ -1615,7 +1636,8 @@ def _fail_node(acc: dict, limit: "int | None" = _FAIL_TOP_CATEGORIES,
     }
 
 
-def compute_failure_reasons_hierarchy(db, campaign: str = None, campaigns: list = None) -> dict:
+def compute_failure_reasons_hierarchy(db, campaign: str = None, campaigns: list = None,
+                                      date_start=None, date_end=None) -> dict:
     """Failure Reason yang dipecah menurut hierarki sales: Area Manager -> Team
     Leader -> Agent, masing-masing dengan kategori scorecard yang paling sering
     gagal DI SIMPUL ITU.
@@ -1636,8 +1658,25 @@ def compute_failure_reasons_hierarchy(db, campaign: str = None, campaigns: list 
 
     ``campaign`` (pilihan pemakai) & ``campaigns`` (batas campaign role) bekerja sama
     seperti pada ``compute_failure_reasons`` — lihat ``done_results_query``.
+
+    ``date_start``/``date_end`` — lihat ``compute_failure_reasons``; filter tanggal
+    yang sama dengan sub-tab Agregat dan dengan tab Failure Rate.
     """
     done_results = done_results_query(db, campaign, campaigns).all()
+    if date_start is not None or date_end is not None:
+        chart_dates = _submit_date_map(db, done_results)
+
+        def _in_window(r):
+            d = chart_dates.get(r.id) or _series_date(r)
+            if d is None:
+                return False
+            if date_start is not None and d < date_start:
+                return False
+            if date_end is not None and d > date_end:
+                return False
+            return True
+
+        done_results = [r for r in done_results if _in_window(r)]
     result_ids = [r.id for r in done_results]
     eval_by_id: dict = {}
     if result_ids:
@@ -2321,6 +2360,44 @@ def _submit_date_map(db, results) -> dict:
     return out
 
 
+def ticket_chart_dates(db, ticket_ids) -> dict:
+    """Map ticket/customer id -> chart date (TMS ``submit_time``, else transcript
+    date) for a given set of ticket ids.
+
+    ``crud.qc_performance_rows`` keys its tickets by the customer id directly
+    (``QcAssignment.ticket_id``) rather than by ``Result.id``, so it can't reuse
+    ``_submit_date_map`` (which is keyed the other way round) — this is that same
+    "kapan sebuah tiket terjadi" rule, just addressed by ticket id, so the QC
+    Productivity table's date filter agrees with the Hierarki Failure Rate tree's
+    (both ultimately call ``_series_date``/TMS submit_time)."""
+    ids = {str(t).strip() for t in (ticket_ids or ()) if str(t).strip()}
+    if not ids:
+        return {}
+    # submit_time dari snapshot reference_data (``crud.cashline_agent_index``),
+    # sumber yang sama dengan ``_submit_time_map`` — BUKAN tabel ``tms_cashline``
+    # seperti di monolit, yang tidak terisi lagi sejak reference data pindah ke DWH.
+    index = crud.cashline_agent_index(db)
+    out: dict = {}
+    for tid in ids:
+        d = _parse_submit_date((index.get(tid) or {}).get("submit_time"))
+        if d is not None:
+            out[tid] = d
+    missing = ids - set(out)
+    if missing:
+        prefix = func.split_part(Result.source_files[0].astext, "_", 1)
+        for r in (
+            exclude_hidden_results(db.query(Result))
+            .filter(prefix.in_(list(missing)))
+            .all()
+        ):
+            cid = _customer_id(r.source_files)
+            if cid and cid in missing and cid not in out:
+                d = _series_date(r)
+                if d is not None:
+                    out[cid] = d
+    return out
+
+
 def _parse_ymd(value):
     """Parse a 'YYYY-MM-DD' string into a date (None if missing/invalid)."""
     if not value:
@@ -2856,6 +2933,84 @@ def compute_scoped_hierarchy(roster) -> dict:
     }
 
 
+# --- Top TLO per masa kerja (menu "Generate PPT Error Rate") ---------------
+# Sumber slide "Error Rate - Top 10 TLO" PPT Error Rate Update: 3 bucket masa
+# kerja (0-6 / 6-12 / >12 bulan sejak "JOIN POSISI" di roster Database Sales),
+# top-N agent per Error Rate di tiap bucket.
+
+_AGING_BUCKETS = ("0-6 Bulan", "6-12 Bulan", "> 12 Bulan")
+
+
+def _tenure_bucket(join_date, as_of) -> "str | None":
+    """Bucket masa kerja seorang agent per tanggal ``as_of`` (bulan penuh sejak
+    ``join_date``), atau None bila salah satu tanggal tidak diketahui / agent
+    belum resmi bergabung pada ``as_of``."""
+    if not join_date or not as_of:
+        return None
+    months = (as_of.year - join_date.year) * 12 + (as_of.month - join_date.month)
+    if as_of.day < join_date.day:
+        months -= 1
+    if months < 0:
+        return None
+    if months < 6:
+        return _AGING_BUCKETS[0]
+    if months < 12:
+        return _AGING_BUCKETS[1]
+    return _AGING_BUCKETS[2]
+
+
+def compute_top_tlo_by_aging(db, hierarchy: dict, as_of: date, top_n: int = 10) -> dict:
+    """Top-N TLO (agent) per Error Rate, dikelompokkan per bucket masa kerja.
+
+    ``hierarchy`` = pohon Area Manager -> Team Leader -> Agent dari
+    ``compute_stats_snapshot(...)["hierarchy"]`` UNTUK PERIODE YANG SAMA dengan
+    ``as_of``, supaya Error Rate/H/M/L/Approved di sini konsisten dengan slide
+    Trend Error Rate & Error Rate Area Manager/SPV yang memakai snapshot periode
+    itu juga — bukan dihitung ulang dengan jalur kode berbeda.
+
+    ``as_of`` = akhir periode (bukan hari ini) — tanggal acuan menghitung masa
+    kerja, supaya deck bulan lalu tetap menunjukkan bucket masa kerja saat itu
+    walau dibuka ulang bulan berikutnya.
+
+    Hanya TLO yang punya submission pada periode ini (``ticket_count > 0``) dan
+    tanggal ``JOIN POSISI``-nya diketahui di roster yang ikut diranking.
+
+    Kolom %KPI Juli/Agustus + status kode (U/A/S/E1-E3) dari PPT acuan TIDAK ada
+    di sini — data itu tidak tersedia di sistem QC ini (lihat gap analysis);
+    pemanggil (``compliance.ppt_error_rate``) yang mengisi placeholder-nya.
+    """
+    sales_map = active_sales_map(db)
+    buckets: dict = {b: [] for b in _AGING_BUCKETS}
+    for am in hierarchy.get("area_managers") or []:
+        for tl in am.get("team_leaders") or []:
+            for agent in tl.get("agents") or []:
+                if not agent.get("ticket_count"):
+                    continue
+                agent_id = (agent.get("agent_id") or "").strip()
+                entry = sales_map.get(agent_id.casefold()) if agent_id else None
+                join_date = entry.get("join_date") if entry else None
+                bucket = _tenure_bucket(join_date, as_of)
+                if bucket is None:
+                    continue
+                buckets[bucket].append({
+                    "agent_id": agent_id,
+                    "name": agent.get("name"),
+                    "dedicate": (entry.get("dedicated") if entry else None) or "-",
+                    "spv": tl.get("name"),
+                    "join_date": join_date.isoformat() if join_date else None,
+                    "ticket_count": agent.get("ticket_count", 0),
+                    "error_rate": agent.get("error_rate", 0.0),
+                    "risk_high": agent.get("risk_high", 0),
+                    "risk_medium": agent.get("risk_medium", 0),
+                    "risk_low": agent.get("risk_low", 0),
+                    "approved": agent.get("approve", 0),
+                })
+    for b in buckets:
+        buckets[b].sort(key=lambda a: (a["error_rate"], a["ticket_count"]), reverse=True)
+        buckets[b] = buckets[b][:top_n]
+    return buckets
+
+
 def compute_qc_performance(db) -> list:
     """Per-QC performance table ("Performa QC") from ticket ASSIGNMENTS: for each QC
     (and QC Support) user, the tickets a Team Leader QC assigned to them, how many are
@@ -2988,7 +3143,8 @@ def _empty_overview() -> dict:
     }
 
 
-def compute_stats_snapshot(db, customer_ids=None, roster_uids=None) -> dict:
+def compute_stats_snapshot(db, customer_ids=None, roster_uids=None,
+                            date_start=None, date_end=None) -> dict:
     """Scan ``done`` results and build the full Statistics payload (see module
     docstring). Safe on empty data (returns zeroed sections).
 
@@ -3001,6 +3157,16 @@ def compute_stats_snapshot(db, customer_ids=None, roster_uids=None) -> dict:
     ``roster_uids`` (opsional) membatasi ORANG yang di-seed dari roster — dipakai
     mode scoped supaya Area Manager tidak melihat agent di luar areanya. ``None`` =
     seluruh roster.
+
+    ``date_start``/``date_end`` (opsional, ``date`` objects, inklusif) membatasi
+    tiket yang dipindai ke jendela tanggal tertentu — dipakai tab "Failure Rate"
+    (pohon Hierarki + Daftar Productivity QC) supaya kedua tabel itu ikut
+    mengikuti filter tanggal yang sama dengan grafik AI Status. Tanggalnya adalah
+    "chart date" yang SAMA dengan ``compute_ai_status_timeseries``: TMS
+    ``submit_time``, jatuh balik ke tanggal transkrip bila tiket tidak punya baris
+    cashline — supaya kedua fitur menghitung "kapan" satu tiket dengan aturan yang
+    identik. ``None``/``None`` (default) = tanpa batas tanggal, inilah snapshot
+    harian yang di-cache global.
     """
     base = crud.get_stats(db)  # total_uploaded / pending / processing / done / failed / active_campaigns
 
@@ -3031,6 +3197,26 @@ def compute_stats_snapshot(db, customer_ids=None, roster_uids=None) -> dict:
             if st in counts:
                 counts[st] += 1
         base = {**base, **counts, "total_uploaded": len(statuses)}
+
+    if date_start is not None or date_end is not None:
+        # Sama seperti ``compute_ai_status_timeseries``: TMS submit_time dulu,
+        # jatuh balik ke tanggal transkrip. ``base``/status counts di atas SENGAJA
+        # tidak ikut diperiksa ulang di sini — dua field itu tidak dipakai tab
+        # Failure Rate (satu-satunya pemanggil jendela tanggal ini), jadi tetap
+        # global agar tidak menghitung dua kali tanpa manfaat.
+        chart_dates = _submit_date_map(db, done_results)
+
+        def _in_window(r):
+            d = chart_dates.get(r.id) or _series_date(r)
+            if d is None:
+                return False
+            if date_start is not None and d < date_start:
+                return False
+            if date_end is not None and d > date_end:
+                return False
+            return True
+
+        done_results = [r for r in done_results if _in_window(r)]
 
     result_ids = [r.id for r in done_results]
 

@@ -1237,7 +1237,11 @@ def _stats_signature(db: Session) -> str:
     #      ``fail_count`` = TOTAL kemunculan item gagal, ``top_reasons`` tidak dipotong
     #      ke 3; "Penjelasan Mega Ultima Shield" masuk B10; bobot MUS 35.5 -> 36.75
     #      (SC_CL_43). Semua mengubah isi snapshot tanpa ada data baru.
-    version = "v25"
+    # v26: port 4-service cashline_mus (28 September 2026) — MUS CC dipisah dari
+    #      Cashline (bobot MUS 36.75 -> 50, tanpa suku MUS CC 13.25) dan skor akhir
+    #      dipatok minimal 0; keduanya dihitung saat baca, jadi skor/status tiket
+    #      lama bisa berubah tanpa ada data baru.
+    version = "v26"
     sla = "1" if get_doc_sla_enabled(db) else "0"
     # Sidik jari daftar tersembunyi. WAJIB ikut: tanpa ini snapshot yang sudah
     # ter-cache akan terus menyajikan angka tiket yang baru disembunyikan sampai ada
@@ -2583,6 +2587,26 @@ def list_qc_assignments(db: Session) -> list[QcAssignment]:
     return db.query(QcAssignment).order_by(QcAssignment.assigned_at.desc()).all()
 
 
+def bulk_unassign_tickets(db: Session, ticket_ids: Optional[list] = None) -> int:
+    """Lepas assignment QC sekaligus. ``ticket_ids=None`` melepas SEMUA baris;
+    sebuah daftar membatasi ke ticket id itu saja (dipakai tombol "Lepas Semua" di
+    menu Assign Ticket, dibatasi ke cakupan pemanggil oleh pemanggilnya).
+
+    Ini hanya menghapus baris kepemilikan (``qc_assignments``) — riwayat Manual
+    Status yang sudah di-submit QC tersimpan di tabel lain dan TIDAK ikut terhapus,
+    sama seperti melepas satu tiket lewat ``unassign_ticket``.
+    """
+    q = db.query(QcAssignment)
+    if ticket_ids is not None:
+        ids = {str(t).strip() for t in ticket_ids if str(t).strip()}
+        if not ids:
+            return 0
+        q = q.filter(QcAssignment.ticket_id.in_(list(ids)))
+    n = q.delete(synchronize_session=False)
+    db.commit()
+    return n
+
+
 def bulk_assign_tickets_to_qc(
     db: Session, pairs, assigned_by_username: str = None
 ) -> int:
@@ -2808,7 +2832,8 @@ def customer_ids_uploaded_by_role(db: Session, role: str) -> list[str]:
 
 
 def qc_performance_rows(db: Session, campaign: str = None,
-                        campaigns: Optional[list[str]] = None) -> list[dict]:
+                        campaigns: Optional[list[str]] = None,
+                        date_start=None, date_end=None) -> list[dict]:
     """Per-QC assignment/approval tally for the QC table in Hierarki Failure Rate.
 
     Returns ``[{qc_username, name, assigned, approved, approve_rate}]``.
@@ -2822,6 +2847,13 @@ def qc_performance_rows(db: Session, campaign: str = None,
     Computed live rather than from the stats snapshot: the snapshot signature
     tracks results/appeals only, so it would not invalidate when a QC approves
     a ticket and this table would read stale.
+
+    ``date_start``/``date_end`` (opsional, ``date`` objects, inklusif) membatasi
+    tiket ke jendela tanggal yang sama dengan filter di panel "AI Status — per
+    waktu" — dipasang di tab Failure Rate supaya tabel ini ikut dinamis mengikuti
+    filter tanggal, bukan cuma pohon Hierarki-nya. Tanggal tiap tiket memakai
+    aturan "chart date" yang sama dengan grafik itu (TMS submit_time, jatuh balik
+    ke tanggal transkrip) lewat ``stats_aggregate.ticket_chart_dates``.
     """
     # Filter campaign (tab Hierarki Failure Rate): daftar ticket id milik campaign itu.
     # ``QcAssignment`` menyimpan ticket_id, bukan campaign, jadi dipetakan lewat
@@ -2854,6 +2886,23 @@ def qc_performance_rows(db: Session, campaign: str = None,
             if only_tickets is not None and tid not in only_tickets:
                 continue
             assigned[u.casefold()].add(tid)
+
+    if date_start is not None or date_end is not None:
+        # Lazy import: stats_aggregate mengimpor modul ini di level atas (untuk
+        # crud.error_code_appeals_for_results dkk.), jadi impor timbal balik di
+        # level atas akan membentuk lingkaran — pola yang sama dipakai
+        # ``get_or_build_stats_snapshot`` di bawah.
+        from compliance.stats_aggregate import ticket_chart_dates
+
+        all_ticket_ids = {t for s in assigned.values() for t in s}
+        chart_dates = ticket_chart_dates(db, all_ticket_ids)
+        for u in list(assigned):
+            assigned[u] = {
+                t for t in assigned[u]
+                if (d := chart_dates.get(t)) is not None
+                and (date_start is None or d >= date_start)
+                and (date_end is None or d <= date_end)
+            }
 
     checks = db.query(QcManualCheck).all()
     # Map only the results that actually carry a check -> their ticket id.

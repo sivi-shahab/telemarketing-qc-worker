@@ -97,44 +97,33 @@ def no_product_interest(evaluation: dict) -> bool:
     return cashline_status != "INTERESTED" and mus_status != "INTERESTED"
 
 
-#: Kategori MUS-Cashline "wajib" asli (3 item, 36.75 sejak 18 September 2026) — item yang
-#: TERIKAT pada ``mus_wajib_tidak_dipenuhi``/``mus_exempt`` (lihat pemakaiannya di
-#: ``scorecard_score``). SENGAJA dipisah dari MUS Kartu Kredit (di bawah): MUS
-#: Kartu Kredit TIDAK punya kewajiban serupa (murni aditif, lihat ``max_score``),
-#: jadi tidak boleh ikut kena kompensasi TIDAK_DINILAI milik base MUS.
+#: Kategori Mega Ultima Shield (3 item, bobot 50 sejak 25 September 2026). Sampai
+#: 24 September 2026 MUS pada Kartu Kredit non-Cashline (MUS CC, 4 kategori
+#: terpisah) ikut ditimbang di sini secara aditif; Bank Mega lalu memberi tahu
+#: bahwa MUS CC sebenarnya campaign TERSENDIRI, jadi 4 kategori itu dihapus dari
+#: scorecard Cashline dan bobotnya (13.25) dilebur ke item-item MUS dasar.
 BASE_MUS_CATEGORIES = {
     "penjelasan mega ultima shield",
     "final konfirmasi mega ultima shield",
     "legal statement mega ultima shield",
 }
 
-#: Kategori scorecard yang bobotnya milik Mega Ultima Shield (base, 3 item) PLUS
-#: pendaftaran MUS pada kartu kredit non-Cashline (4 item, 13.25 — SC_CL_39..42:
-#: Preposisi Penawaran/Disclaimer/Final Konfirmasi/Legal Statement MUS CC, 14
-#: September 2026). Dipakai untuk pengelompokan UI/umum saja (mis. menandai "ini
-#: bagian keluarga MUS"); untuk logika SKOR yang membedakan wajib vs aditif,
-#: pakai ``BASE_MUS_CATEGORIES``, bukan set gabungan ini — lihat
-#: ``scorecard_score``.
-MUS_CATEGORIES = BASE_MUS_CATEGORIES | {
-    "preposisi penawaran mus cc",
-    "disclaimer mus cc",
-    "final konfirmasi mus cc",
-    "legal statement mus cc",
-}
+#: Alias dari ``BASE_MUS_CATEGORIES`` — dipertahankan sebagai nama terpisah
+#: karena ``is_mus_item`` dipakai modul lain (mis. ``error_codes.py``). Sebelum
+#: MUS CC dipisah, set ini juga mencakup 4 kategori MUS Kartu Kredit; sekarang
+#: sama persis dengan ``BASE_MUS_CATEGORIES``.
+MUS_CATEGORIES = BASE_MUS_CATEGORIES
 
 
 def is_mus_item(item) -> bool:
-    """True bila item scorecard ini milik salah satu kategori Mega Ultima Shield
-    (base ATAU MUS Kartu Kredit). Untuk logika skor yang butuh membedakan
-    keduanya, pakai ``is_base_mus_item``."""
+    """True bila item scorecard ini milik salah satu kategori Mega Ultima
+    Shield."""
     return str((item or {}).get("category") or "").strip().casefold() in MUS_CATEGORIES
 
 
 def is_base_mus_item(item) -> bool:
-    """True bila item scorecard ini milik salah satu KATEGORI MUS-Cashline asli
-    (bukan MUS Kartu Kredit) — dipakai KHUSUS oleh kompensasi TIDAK_DINILAI di
-    ``scorecard_score`` karena hanya base MUS yang punya bobot "wajib" di
-    ``max_score``."""
+    """Alias dari ``is_mus_item`` — nama terpisah dipertahankan karena dipakai
+    khusus oleh kompensasi TIDAK_DINILAI di ``scorecard_score``."""
     return str((item or {}).get("category") or "").strip().casefold() in BASE_MUS_CATEGORIES
 
 
@@ -188,51 +177,27 @@ def mus_wajib_tidak_dipenuhi(evaluation: dict) -> bool:
 
 def max_score(evaluation: dict):
     """Skor maksimal = jumlah bobot produk yang diminati (Mega Cashline 100 +
-    Mega Ultima Shield 36.75 + MUS Kartu Kredit 13.25); fallback ke ``maximum_score``.
+    Mega Ultima Shield 50); fallback ke ``maximum_score``.
 
-    Revisi 18 September 2026 (``Score Card Cashline 18092026.xlsx``): Mega Ultima
-    Shield naik 35,5 -> 36,75 karena SATU item baru di kategori "Final Konfirmasi
-    Mega Ultima Shield" — ``SC_CL_43`` "premi yang telah dibayarkan tidak dapat
-    dikembalikan apabila customer mengajukan pembatalan" (bobot 1,25, Major/Not
-    tolerable). Itu SATU-SATUNYA perubahan bobot pada revisi itu; Mega Cashline
-    (100) dan MUS Kartu Kredit (13,25) tidak bergerak, sehingga "Total Score" xlsx
-    naik 148,75 -> 150 dan passing grade 133,875 -> 135.
-
-    Kodenya sengaja ``SC_CL_43`` (append), BUKAN disisipkan sebagai SC_CL_35 dengan
-    menggeser nomor sesudahnya: seluruh ``result_json`` tiket lama sudah menyimpan
-    SC_CL_35/36 dengan arti yang berbeda, dan renumbering akan membuat riwayat itu
-    salah baca. Diukur sebelum diterapkan: pada 50 tiket cashline yang sudah ``done``,
-    kenaikan penyebut ini TIDAK membalik satu pun vonis PASS/FAIL (tiket lama tidak
-    punya SC_CL_43 sehingga tidak kehilangan apa pun, dan skornya ikut naik 1,25
-    sementara batas lulusnya hanya naik 1,125).
-
-    Revisi scorecard v4 (14 September 2026, ``Score Card Cashline 14092026.xlsx``
-    tab "cashline + mega ultima shield"): SELURUH bobot direvisi ulang, bukan cuma
-    penambahan MUS Kartu Kredit — Mega Cashline turun dari 108,75 ke 100 (lihat
-    weight per-item baru di ``scorecard_text`` campaign, mis. Verifikasi statik
-    15->10/item, Verifikasi Dinamis 15->10 total), dan Mega Ultima Shield turun
-    dari 41,25 ke 35,5 (SC_CL_19 5->3, SC_CL_21 4.5->3, SC_CL_33 3.25->2.25,
-    SC_CL_35 3.5->2.25 — total -5,75). Total gabungan saat itu = 100+35.5+13.25
-    = 148,75; sejak revisi 18 September 2026 di atas menjadi 100+36.75+13.25 = 150.
+    Revisi 25 September 2026 (``Score Card Cashline 25092026.xlsx``): Bank Mega
+    memberi tahu bahwa MUS pada Kartu Kredit non-Cashline (MUS CC) adalah
+    campaign TERSENDIRI, di luar cakupan campaign Cashline ini. Empat kategori
+    MUS CC (SC_CL_39..42 — Preposisi Penawaran/Disclaimer/Final Konfirmasi/Legal
+    Statement, total 13.25) dihapus dari scorecard Cashline, dan bobotnya
+    dilebur ke item-item MUS dasar (SC_CL_21, SC_CL_33, SC_CL_34, SC_CL_38,
+    SC_CL_43) sehingga Mega Ultima Shield naik 36.75 -> 50 dan "MUS Kartu
+    Kredit" tidak lagi ada sebagai konsep aditif terpisah di sini — lihat
+    ``compliance.scoring`` history sebelum revisi ini untuk detail bobot
+    lama (35.5 -> 36.75 -> 50).
 
     Bobot MUS juga dihitung ketika MUS WAJIB tetapi tidak dipenuhi
     (``mus_wajib_tidak_dipenuhi``). Di situlah aturan 8 September 2026 menggigit:
     keringanan lama menurunkan skor maksimal sehingga tiket cashline-saja bisa
     LULUS dengan nilai penuh. Sekarang penyebutnya tetap penuh dan item MUS
-    dipotong penuh, sehingga tiket semacam itu mentok di 100/136.75 = 73,1% — di
+    dipotong penuh, sehingga tiket semacam itu mentok di 100/150 = 66,7% — di
     bawah batas lulus 90%, jadi TIDAK LULUS tanpa perlu aturan veto terpisah.
 
     Tiket yang DIKECUALIKAN tetap memakai perhitungan lama (hanya Mega Cashline).
-
-    MUS Kartu Kredit (SC_CL_39..42 — Preposisi Penawaran 1.5, Disclaimer MUS CC 2,
-    Final Konfirmasi MUS CC 2.25, Legal Statement MUS CC 7.5, total 13.25, 14
-    September 2026) TIDAK punya padanan ``mus_wajib_tidak_dipenuhi``: berbeda dari
-    MUS-Cashline (wajib ditawarkan ke SEMUA nasabah cashline+MUS), MUS Kartu
-    Kredit hanya relevan bila nasabah memang punya kartu kredit terpisah — fakta
-    yang sistem ini belum punya datanya. Jadi murni ADITIF: bobotnya HANYA masuk
-    penyebut saat ``mus_cc_interest`` benar-benar "INTERESTED" (dibahas &
-    disetujui di transkrip); ``NOT_STATED``/``NOT_INTERESTED`` tidak menaikkan
-    penyebut maupun memotong skor (keputusan bisnis, bukan celah).
     """
     total = 0.0
     found = False
@@ -240,13 +205,10 @@ def max_score(evaluation: dict):
         total += 100
         found = True
     if (evaluation.get("mus_interest") or {}).get("status") == "INTERESTED":
-        total += 36.75
+        total += 50
         found = True
     elif mus_wajib_tidak_dipenuhi(evaluation):
-        total += 36.75
-        found = True
-    if (evaluation.get("mus_cc_interest") or {}).get("status") == "INTERESTED":
-        total += 13.25
+        total += 50
         found = True
     if found:
         return int(total) if total == int(total) else total
@@ -304,8 +266,8 @@ def scorecard_score(evaluation: dict):
     ``no_product_interest``).
 
     MUS WAJIB TAPI TIDAK DIPENUHI: item MUS yang masih ditandai ``TIDAK_DINILAI``
-    dipotong PENUH. Tanpa ini ``max_score`` sudah naik ke 150 sementara 11 item MUS
-    tidak dipotong apa pun, sehingga tiket cashline-saja justru mendapat 41.25 poin
+    dipotong PENUH. Tanpa ini ``max_score`` sudah naik ke 150 sementara item MUS
+    tidak dipotong apa pun, sehingga tiket cashline-saja justru mendapat 50 poin
     gratis — kebalikan dari maksud aturannya. Yang dipotong di sini HANYA yang
     ``TIDAK_DINILAI``; item MUS yang sudah dinilai ``BELUM_SESUAI`` sudah ditangani
     ``_item_deduction`` dan tidak boleh dipotong dua kali, dan yang ``SESUAI``
@@ -316,12 +278,8 @@ def scorecard_score(evaluation: dict):
     apa adanya, jadi cabang ini tidak menemukan apa-apa dan skornya bergradasi
     mengikuti apa yang sungguh dilakukan agent.
 
-    Sengaja pakai ``is_base_mus_item`` (BUKAN ``is_mus_item``): item MUS Kartu
-    Kredit (SC_CL_39..42) yang ``TIDAK_DINILAI`` (kasus NORMAL sejak 14 September
-    2026 — lihat MUS CC SCORECARD CONDITIONAL RULE di prompt) TIDAK boleh ikut
-    kompensasi ini, karena bobotnya memang tidak pernah masuk ``max_score`` untuk
-    tiket semacam itu (murni aditif). Memakai set gabungan di sini akan memotong
-    13,25 ekstra dari skor tiket yang sebetulnya sah tidak menawarkan MUS CC."""
+    Pakai ``is_base_mus_item`` (sama dengan ``is_mus_item`` sejak MUS CC dipisah
+    menjadi campaign tersendiri, 25 September 2026 — lihat ``BASE_MUS_CATEGORIES``)."""
     if no_product_interest(evaluation):
         return 0
     max_sc = max_score(evaluation)
@@ -463,6 +421,13 @@ def phase3_score(evaluation: dict):
     dipropagasikan ke scorecard; sukunya dipertahankan supaya hasil LAMA yang masih
     membawa angka di sana tetap dihitung sama seperti dulu.
 
+    SKOR MINIMAL 0 (28 September 2026): ``critical`` dan ``bomb`` adalah suku
+    negatif yang tidak berbagi anggaran dengan ``phase2`` — cukup banyak item
+    kritis/non-tolerable gagal dan totalnya bisa minus, padahal skor tiket
+    tidak punya arti di bawah 0. Dipatok di sini karena inilah satu-satunya
+    tempat rumusnya ditulis; semua pemanggil (Results, detail tiket, ekspor
+    XLSX) ikut terpotong tanpa perlu clamp masing-masing.
+
     Mengembalikan None bila tidak satu pun komponennya diketahui.
     """
     phase2 = scorecard_score(evaluation)
@@ -472,6 +437,7 @@ def phase3_score(evaluation: dict):
     if phase2 is None and verif is None and critical is None and not bomb:
         return None
     total = (phase2 or 0) + (verif or 0) + (critical or 0) + bomb
+    total = max(0, total)
     return int(total) if total == int(total) else total
 
 
