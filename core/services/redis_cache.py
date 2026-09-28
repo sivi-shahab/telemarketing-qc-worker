@@ -86,3 +86,34 @@ def set_many(items: dict, ttl_sec: int = None) -> None:
         pipe.execute()
     except Exception as exc:  # noqa: BLE001 — Redis opsional
         _failed(exc)
+
+
+def acquire(key: str, ttl_sec: int) -> bool:
+    """Kunci sederhana lintas proses (SET NX EX). True = boleh jalan.
+
+    Fail-open: tanpa Redis atau saat Redis bermasalah, kembalikan True — pekerjaan
+    yang dijaga (mis. hitung ulang snapshot Statistics) lebih baik terhitung dobel
+    daripada tidak pernah jalan. ``ttl_sec`` membatasi kunci yang tertinggal bila
+    pemegangnya mati sebelum ``release``.
+    """
+    if not _available():
+        return True
+    try:
+        client = _client()
+        if client is None:
+            return True
+        return bool(client.set(key, "1", ex=ttl_sec, nx=True))
+    except Exception as exc:  # noqa: BLE001 — Redis opsional
+        _failed(exc)
+        return True
+
+
+def release(key: str) -> None:
+    if not _available():
+        return
+    try:
+        client = _client()
+        if client is not None:
+            client.delete(key)
+    except Exception as exc:  # noqa: BLE001 — Redis opsional
+        _failed(exc)
