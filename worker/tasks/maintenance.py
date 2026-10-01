@@ -2,6 +2,8 @@
 
 ``fail_stale_processing_results`` menutup result yang tertahan ``processing``
 karena worker-nya mati di tengah jalan — lihat ``crud.STALE_PROCESSING_AFTER``.
+``fail_stale_ocr_images`` melakukan hal serupa untuk gambar menu OCR Gambar yang
+menggantung ``pending``/``processing`` — lihat ``crud.fail_stale_ocr_images``.
 """
 import logging
 
@@ -37,6 +39,21 @@ def fail_stale_processing_results():
         logger.warning("%d result processing basi ditutup jadi failed: %s",
                        len(ids), ", ".join(ids))
     return {"failed": len(ids)}
+
+
+# OCR Gambar (1 Oktober 2026): tanpa ini gambar yang task-nya hilang atau worker-nya
+# mati tertahan pending/processing selamanya dan tombol "Proses ulang" tak muncul.
+@celery_app.task(name="worker.tasks.maintenance.fail_stale_ocr_images",
+                 ignore_result=True)
+def fail_stale_ocr_images():
+    db = _session_factory()()
+    try:
+        count = crud.fail_stale_ocr_images(db)
+    finally:
+        db.close()
+    if count:
+        logger.warning("%d gambar OCR pending/processing basi ditutup jadi failed", count)
+    return {"failed": count}
 
 
 # Snapshot Statistics global disegarkan proaktif (28 September 2026): API sudah

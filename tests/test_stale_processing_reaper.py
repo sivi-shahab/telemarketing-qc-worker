@@ -54,3 +54,41 @@ def test_task_memanggil_crud_dan_menutup_sesi(monkeypatch):
     assert calls == [session]
     assert closed == [True]
     assert res == {"failed": 2}
+
+
+# --- OCR Gambar: ocr_images pending/processing basi (review akhir F4) ---------
+# Perilaku UPDATE-nya diuji di repo api (tests/test_stale_processing_reaper.py).
+
+OCR_TASK = "worker.tasks.maintenance.fail_stale_ocr_images"
+
+
+def test_beat_menjadwalkan_pembersih_ocr_tiap_120_detik():
+    from worker.celery_app import celery_app
+
+    (entry,) = [e for e in celery_app.conf.beat_schedule.values() if e["task"] == OCR_TASK]
+    assert entry["schedule"] == 120.0
+
+
+def test_ambang_ocr_aman_terhadap_batas_task_dan_redis():
+    from db import crud
+    from worker.celery_app import celery_app
+
+    visibility = celery_app.conf.broker_transport_options["visibility_timeout"]
+    (entry,) = [e for e in celery_app.conf.beat_schedule.values() if e["task"] == OCR_TASK]
+    processing = crud.OCR_STALE_PROCESSING_AFTER.total_seconds()
+    assert processing == 55 * 60 and crud.OCR_STALE_PENDING_AFTER.total_seconds() == 60 * 60
+    assert celery_app.conf.task_time_limit < processing
+    assert processing + entry["schedule"] < visibility
+
+
+def test_task_ocr_memanggil_crud_dan_menutup_sesi(monkeypatch):
+    from worker.tasks import maintenance as mod
+
+    calls, closed = [], []
+    session = SimpleNamespace(close=lambda: closed.append(True))
+    monkeypatch.setattr(mod, "_session_factory", lambda: (lambda: session))
+    monkeypatch.setattr(mod.crud, "fail_stale_ocr_images", lambda db: calls.append(db) or 3)
+
+    res = mod.fail_stale_ocr_images.run()
+
+    assert (calls, closed, res) == ([session], [True], {"failed": 3})

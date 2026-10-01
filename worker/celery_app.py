@@ -71,6 +71,10 @@ celery_app.conf.update(
             "task": "worker.tasks.maintenance.fail_stale_processing_results",
             "schedule": 120.0,
         },
+        "fail-stale-ocr-images": {
+            "task": "worker.tasks.maintenance.fail_stale_ocr_images",
+            "schedule": 120.0,
+        },
         "refresh-stats-snapshot": {
             "task": "worker.tasks.maintenance.refresh_stats_snapshot",
             "schedule": 120.0,

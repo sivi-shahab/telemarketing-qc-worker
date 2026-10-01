@@ -403,12 +403,13 @@ class OcrImage(Base):
 
     Alat mandiri (1 Oktober 2026): tidak terikat tiket/result. Satu baris per
     gambar; ``batch_id`` mengelompokkan gambar dari satu kali upload. Gambarnya
-    ada di bucket dokumen dengan prefix ``ocr-images/``.
+    ada di bucket dokumen dengan prefix ``ocr-images/``. ``user_id`` menjadi NULL
+    saat user dihapus: riwayatnya tetap ada untuk Admin (pengunggah "-").
     """
     __tablename__ = "ocr_images"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     batch_id = Column(UUID(as_uuid=True), nullable=False)
     filename = Column(String(255), nullable=False)
     object_path = Column(String(512), nullable=False)

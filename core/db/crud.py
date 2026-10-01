@@ -11,7 +11,7 @@ from threading import Lock
 from typing import Iterable, Optional
 
 from sqlalchemy.orm import Session
-from sqlalchemy import Text, and_, cast, func, desc, or_
+from sqlalchemy import Text, and_, cast, func, desc, or_, update
 
 
 # [FIX] ``AscendCustp`` dan ``TmsCashline`` DIHAPUS dari daftar import: kedua tabel
@@ -24,6 +24,7 @@ from db.models import (
     Campaign,
     Document,
     ErrorCodeAppeal,
+    OcrImage,
     QcAssignment,
     QcDatabase,
     QcManualCheck,
@@ -260,6 +261,42 @@ def fail_stale_processing_results(db: Session, now: datetime = None) -> list:
         )
     db.commit()
     return [str(r.id) for r in rows]
+
+
+# OCR Gambar (1 Oktober 2026): baris ``ocr_images`` yang menggantung — task hilang dari
+# antrean atau worker mati di tengah — tidak bisa di-"Proses ulang" karena endpoint
+# retry hanya menerima ``failed``. ``processing`` memakai ambang yang sama dengan
+# result (di atas ``task_time_limit``, di bawah ``visibility_timeout`` - interval beat);
+# ``pending`` dinilai dari ``created_at`` karena belum pernah diambil worker.
+OCR_STALE_PROCESSING_AFTER = STALE_PROCESSING_AFTER
+OCR_STALE_PENDING_AFTER = timedelta(minutes=60)
+OCR_STALE_MESSAGE = "Waktu proses habis — klik Proses ulang"
+
+
+def fail_stale_ocr_images(db: Session, now: datetime = None) -> int:
+    """Tutup ``ocr_images`` pending/processing yang basi jadi ``failed``; kembalikan
+    jumlahnya. Satu pernyataan UPDATE (tanpa loop per baris).
+
+    Seperti ``fail_stale_processing_results``: ``now`` default-nya UTC naive dari
+    Python, bukan ``func.now()`` DB (zona DB = WIB). ``started_at`` ditulis worker dan
+    ``created_at`` diisi ``server_default=now()`` dari sesi ber-``timezone=UTC`` —
+    keduanya UTC naive juga.
+    """
+    if now is None:
+        now = datetime.utcnow()
+    result = db.execute(
+        update(OcrImage)
+        .where(or_(
+            and_(OcrImage.status == "processing",
+                 OcrImage.started_at < now - OCR_STALE_PROCESSING_AFTER),
+            and_(OcrImage.status == "pending",
+                 OcrImage.created_at < now - OCR_STALE_PENDING_AFTER),
+        ))
+        .values(status="failed", error_message=OCR_STALE_MESSAGE, finished_at=now)
+        .execution_options(synchronize_session=False)
+    )
+    db.commit()
+    return result.rowcount
 
 
 def _result_json_key(row_id) -> str:
