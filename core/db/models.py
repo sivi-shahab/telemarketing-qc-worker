@@ -398,6 +398,31 @@ class Document(Base):
     completed_at = Column(DateTime)
 
 
+class OcrImage(Base):
+    """Gambar yang di-upload ke menu OCR Gambar, beserta teks hasil OCR-nya.
+
+    Alat mandiri (1 Oktober 2026): tidak terikat tiket/result. Satu baris per
+    gambar; ``batch_id`` mengelompokkan gambar dari satu kali upload. Gambarnya
+    ada di bucket dokumen dengan prefix ``ocr-images/``.
+    """
+    __tablename__ = "ocr_images"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    batch_id = Column(UUID(as_uuid=True), nullable=False)
+    filename = Column(String(255), nullable=False)
+    object_path = Column(String(512), nullable=False)
+    mime_type = Column(String(64), nullable=False)
+    size_bytes = Column(Integer, nullable=False)
+    status = Column(String(16), nullable=False, default="pending")  # pending|processing|done|failed
+    text = Column(Text)
+    error_message = Column(Text)
+    token_usage = Column(JSONB)
+    created_at = Column(DateTime, server_default=func.now())
+    started_at = Column(DateTime)
+    finished_at = Column(DateTime)
+
+
 class QcStatusRequest(Base):
     """A QC-proposed AI-Status change for a result, pending SPQ Head approval.
 
