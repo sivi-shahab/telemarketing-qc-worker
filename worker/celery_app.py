@@ -23,6 +23,7 @@ celery_app = Celery(
     include=[
         "worker.tasks.process_transcript",
         "worker.tasks.process_document",
+        "worker.tasks.process_ocr_image",
         "worker.tasks.reprocess_ticket",
         "worker.tasks.maintenance",
     ],
