@@ -7,9 +7,13 @@ SQL, tanpa HTTP. Hasil evaluasi yang dibuat SEBELUM Aplikasi A menyimpan
 Statistics recompute, index harus jatuh ke fallback DWH API untuk baris-baris
 tersebut.
 
-Script ini menambal baris lama itu sekali jalan supaya fallback berhenti
-terpanggil. MURNI OPTIMASI -- angka Statistics sudah benar tanpa ini, karena
-fallback memang menutup celahnya.
+Script ini menambal baris lama itu sekali jalan. BUKAN sekadar optimasi
+(6 Oktober 2026): ``data_gap_map`` dan tenggat H+2 membaca snapshot TANPA fallback,
+dan fallback DWH-nya sendiri ikut membaca cache App A yang belum memuat kedua field
+(176 dari 350 tiket Cashline). Karena itu script menyalakan
+``data_dwh.set_fill_cashline_ids(True)``: cache App A tanpa key ``agent_id``/
+``submit_time`` ditanyakan ulang ke endpoint asli. Endpoint asli lambat dan kadang
+timeout -- tiket yang gagal cukup dijalankan ulang (script ini idempoten).
 
 Yang ditulis HANYA dua field itu, dan HANYA kalau nilainya belum ada; sisa isi
 ``reference_data`` tidak disentuh. Salinan JSON di MinIO ``results/{id}.json``
@@ -84,6 +88,7 @@ def main():
     ap.add_argument("--skip-minio", action="store_true",
                     help="hanya perbarui Postgres, jangan sentuh salinan MinIO")
     args = ap.parse_args()
+    data_dwh.set_fill_cashline_ids(True)
 
     db = _session_factory()()
     try:
