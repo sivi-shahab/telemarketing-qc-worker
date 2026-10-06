@@ -111,6 +111,43 @@ def _pick(norm_header, header_names, fallback_idx):
     return idx
 
 
+class Roster(dict):
+    """Peta roster ``{USER ID (casefold) -> entry}`` yang juga mengenal ALIAS ID.
+
+    Roster 30 September 2026 memecah ``USER ID`` menjadi ``USER ID LAMA`` dan
+    ``USER ID BARU``. Kuncinya ID LAMA (yang dipakai ``agent_id`` TMS); ID BARU hanya
+    alias: ``get``/``[]``/``in`` mengenalnya, tetapi iterasi (``items``/``values``/
+    ``len``) TIDAK, supaya tiap agent tetap SATU baris di dropdown hierarki,
+    Statistics, dan daftar roster. ``aliases_of(uid)`` mengembalikan ID lain milik
+    agent yang sama (dipakai cakupan TL/AM).
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._alias: dict = {}
+
+    def add_alias(self, alias: str, uid: str) -> None:
+        if alias and alias != uid and not dict.__contains__(self, alias):
+            self._alias.setdefault(alias, uid)
+
+    def aliases_of(self, uid: str) -> list:
+        return [a for a, u in self._alias.items() if u == uid]
+
+    def _resolve(self, key):
+        if dict.__contains__(self, key):
+            return key
+        return self._alias.get(key, key)
+
+    def __getitem__(self, key):
+        return dict.__getitem__(self, self._resolve(key))
+
+    def __contains__(self, key):
+        return dict.__contains__(self, self._resolve(key))
+
+    def get(self, key, default=None):
+        return dict.get(self, self._resolve(key), default)
+
+
 def parse_roster(data: bytes) -> dict:
     """``{USER ID (casefold) -> {"name", "name_online", "join_date", "team_leader",
     "area_manager", "nip_tl", "nip_am", "dedicated", "nip_baru"}}`` dari isi xlsx.
@@ -118,7 +155,8 @@ def parse_roster(data: bytes) -> dict:
     Mengembalikan ``{}`` bila file-nya tidak bisa dibaca/di-parse — pemanggil
     memperlakukannya sama dengan "tidak ada database sales aktif".
     """
-    mapping: dict = {}
+    mapping = Roster()
+    aliases = []  # (alias, uid) — didaftarkan sesudah semua kunci utama ada
     try:
         wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
         ws = wb.active
@@ -126,16 +164,22 @@ def parse_roster(data: bytes) -> dict:
         header = next(rows, None)
         if header:
             nh = [norm(h).casefold() for h in header]
-            uid_i = _pick(nh, ("user id", "user_id", "userid"), None)
+            uid_i = _pick(nh, ("user id", "user_id", "userid", "user id lama"), None)
+            # Format 30 September 2026: ID BARU di samping ID LAMA.
+            uid_baru_i = _pick(nh, ("user id baru",), None)
             name_i = _pick(nh, ("name",), None)
             nameon_i = _pick(nh, (_NAME_ONLINE_HEADER,), _NAME_ONLINE_FALLBACK_IDX)
-            join_i = next((i for i, h in enumerate(nh) if h.startswith("join posisi")), None)
+            # "JOIN ONLINE" menggantikan "JOIN POSISI" di roster 30 September 2026.
+            join_i = next((i for i, h in enumerate(nh)
+                           if h.startswith("join posisi") or h.startswith("join online")), None)
             tl_i = _pick(nh, (_TL_HEADER,), _TL_FALLBACK_IDX)
             am_i = _pick(nh, (_AM_HEADER,), _AM_FALLBACK_IDX)
             niptl_i = _pick(nh, (_NIP_TL_HEADER,), _NIP_TL_FALLBACK_IDX)
             ded_i = _pick(nh, (_DEDICATED_HEADER,), _DEDICATED_FALLBACK_IDX)
             nipam_i = _pick(nh, _NIP_AM_HEADERS, _NIP_AM_FALLBACK_IDX)
             nipbaru_i = _pick(nh, (_NIP_BARU_HEADER,), _NIP_BARU_FALLBACK_IDX)
+            if uid_i is None:
+                uid_i, uid_baru_i = uid_baru_i, None
             if uid_i is not None:
                 # SEMUA kolom identitas dibaca lewat person(), bukan norm():
                 # placeholder roster harus jadi kosong SEBELUM tersimpan, supaya tidak
@@ -143,11 +187,17 @@ def parse_roster(data: bytes) -> dict:
                 # compliance.call_ownership) yang perlu tahu soal "-" dan "0".
                 cell = lambda r, i: person(r[i]) if (i is not None and i < len(r)) else ""
                 for r in rows:
-                    if not r or uid_i >= len(r):
+                    if not r:
                         continue
-                    uid = person(r[uid_i])
+                    uid = cell(r, uid_i)
+                    uid_baru = cell(r, uid_baru_i)
+                    if not uid:
+                        # Agent baru tanpa ID lama: ID BARU jadi kuncinya.
+                        uid, uid_baru = uid_baru, ""
                     if not uid:
                         continue  # baris padding "0" — bukan agent
+                    if uid_baru:
+                        aliases.append((uid_baru.casefold(), uid.casefold()))
                     join_date = (
                         to_date(r[join_i], JOIN_FORMATS)
                         if (join_i is not None and join_i < len(r))
@@ -167,4 +217,6 @@ def parse_roster(data: bytes) -> dict:
         wb.close()
     except Exception:
         return {}
+    for alias, uid in aliases:
+        mapping.add_alias(alias, uid)
     return mapping
