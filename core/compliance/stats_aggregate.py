@@ -708,6 +708,18 @@ DATA_GAP_REASON = {
 DATA_GAP_ORDER = (DATA_GAP_TRANSCRIPT, DATA_GAP_TMS, DATA_GAP_AGENT, DATA_GAP_ASCEND)
 
 
+#: Kekurangan yang MEMAKSA AI Status PENDING — hanya acuan yang dikirim ke LLM.
+#: ``agent`` sengaja tidak termasuk (6 Oktober 2026): data agent tidak ikut dinilai,
+#: jadi skor dan vetonya tetap sah. Saat roster sales terbaca kosong, aturan lama
+#: membuat SETIAP tiket PENDING. Kekurangan agent tetap tampil sebagai catatan.
+PENDING_DATA_GAPS = (DATA_GAP_TRANSCRIPT, DATA_GAP_TMS, DATA_GAP_ASCEND)
+
+
+def pending_data_gap(gaps) -> tuple:
+    """Bagian dari ``gaps`` yang memaksa PENDING (lihat ``PENDING_DATA_GAPS``)."""
+    return tuple(g for g in (gaps or ()) if g in PENDING_DATA_GAPS)
+
+
 def data_gap_reasons(gaps) -> str:
     """Kalimat gabungan untuk kolom AI Status, mis. "Data TMS Kosong · Data Ascend
     Kosong". String kosong bila tidak ada kekurangan."""
@@ -809,10 +821,12 @@ def _result_ai_status(result_json, appeals, qc_request, missing_docs=False,
        PENDING, lewat tenggat -> FAIL;
     4. konsistensi verifikasi statik & badword -> FAIL;
     5. ``data_gap`` -> PENDING (28 Agustus 2026), menimpa aturan 2, 3, dan 4 — hanya
-       aturan 0 (vonis human) yang masih mengalahkannya.
+       aturan 0 (vonis human) yang masih mengalahkannya. Sejak 6 Oktober 2026 hanya
+       transkrip / TMS / Ascend yang dihitung; agent tidak terpetakan TIDAK lagi
+       memaksa PENDING (lihat ``PENDING_DATA_GAPS``).
 
     Akibat aturan 2-5, PENDING hanya bisa dicapai lewat DUA jalan:
-      * ada kekurangan data acuan (transkrip / TMS / agent / Ascend); atau
+      * ada kekurangan data acuan (transkrip / TMS / Ascend); atau
       * tidak ada pelanggaran non-tolerable, tetapi ada dokumen wajib yang belum
         diunggah dan tenggat H+2-nya belum lewat.
 
@@ -883,7 +897,7 @@ def _result_ai_status(result_json, appeals, qc_request, missing_docs=False,
     #
     # Satu-satunya yang masih mengalahkannya adalah vonis human yang sudah di-approve
     # (aturan 0 di paling atas fungsi ini).
-    if data_gap:
+    if pending_data_gap(data_gap):
         status = "PENDING"
     return status
 
