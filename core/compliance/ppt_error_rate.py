@@ -80,6 +80,7 @@ _TOTAL_BG = RGBColor(0x00, 0xB0, 0xF0)    # baris Total/Grand Total
 _GREEN = RGBColor(0x92, 0xD0, 0x50)       # Risk Rate 0%-3%
 _RATE_YELLOW = RGBColor(0xFF, 0xFF, 0x00) # Risk Rate 3%-6%
 _RED = RGBColor(0xFF, 0x00, 0x00)         # Risk Rate >6%
+_GROUP_BG = RGBColor(0xBF, 0x90, 0x00)    # baris header grup (USAGE/CARD/RETENTION)
 _GRAY_FG = RGBColor(0x75, 0x75, 0x75)
 _WHITE = RGBColor(0xFF, 0xFF, 0xFF)
 _BLACK = RGBColor(0x1A, 0x1A, 0x1A)
@@ -139,11 +140,6 @@ _TPL_TOPTLO = {
 # terpisah, dst.) jadi tidak bisa dipetakan 1:1 seperti ``_TPL_AM``/
 # ``_TPL_SPV`` — lihat ``_table_slide``.
 _TPL_DETAIL = _ASSET_DIR / "bg_detail.jpg"
-
-
-def _truncate(text, limit) -> str:
-    text = (text or "").strip()
-    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
 def _fmt_pct(value) -> str:
@@ -385,8 +381,10 @@ def _style_header_cell(cell, text):
 
 
 def _style_body_cell(cell, text, *, bold=False, fill=None, font_color=None,
-                      align=PP_ALIGN.CENTER, italic=False):
-    cell.text = text
+                      align=PP_ALIGN.CENTER, italic=False, size=9.5):
+    # Sel kosong diisi spasi supaya ikut ukuran font tabel — paragraf kosong jatuh ke
+    # font default 18pt dan membuat baris (mis. header grup USAGE) jadi jauh lebih tinggi.
+    cell.text = text or " "
     cell.vertical_anchor = MSO_ANCHOR.MIDDLE
     cell.margin_left = cell.margin_right = Emu(45720)
     if fill is not None:
@@ -405,15 +403,20 @@ def _style_body_cell(cell, text, *, bold=False, fill=None, font_color=None,
     p = cell.text_frame.paragraphs[0]
     p.alignment = align
     run = p.runs[0] if p.runs else p.add_run()
-    run.font.size = Pt(9.5)
+    run.font.size = Pt(size)
     run.font.bold = bold
     run.font.italic = italic
     run.font.name = _BODY_FONT
+    # Sel merah (Error Rate > 6%) pakai font PUTIH supaya terbaca jelas
+    # (2 Oktober 2026, atas permintaan user).
+    if font_color is None and fill == _RED:
+        font_color = _WHITE
     run.font.color.rgb = font_color or (_GRAY_FG if text == PLACEHOLDER else _BLACK)
 
 
 def _add_table(slide, left, top, width, height, headers, rows, *,
-                col_widths=None, rate_cols=(), bold_rows=()):
+                col_widths=None, rate_cols=(), bold_rows=(), group_rows=(),
+                header_h=0.45, row_h=0.4, font_pt=9.5, align_left_cols=()):
     """Render satu tabel. ``rows`` = list of list-of-str (sudah diformat pemanggil).
 
     ``rate_cols`` = indeks kolom yang selnya diwarnai sesuai ambang Error Rate
@@ -431,23 +434,25 @@ def _add_table(slide, left, top, width, height, headers, rows, *,
     # membuat baris raksasa kosong. Baris tetap bisa tumbuh lebih tinggi dari
     # ini kalau isinya wrap ke banyak baris teks; ini cuma batas BAWAH yang
     # wajar, bukan tinggi tetap.
-    table.rows[0].height = Inches(0.45)
+    table.rows[0].height = Inches(header_h)
     for r in range(1, n_rows):
-        table.rows[r].height = Inches(0.4)
+        table.rows[r].height = Inches(row_h)
     for c, h in enumerate(headers):
         _style_header_cell(table.cell(0, c), h)
     for r, row in enumerate(rows):
-        is_bold = r in bold_rows
+        is_group = r in group_rows
+        is_bold = r in bold_rows or is_group
         for c, val in enumerate(row):
             text = val if isinstance(val, str) else str(val)
-            fill = _TOTAL_BG if is_bold else None
+            fill = _GROUP_BG if is_group else (_TOTAL_BG if is_bold else None)
             if c in rate_cols and text not in (PLACEHOLDER, ""):
                 try:
                     pct = float(text.replace("%", "").replace(",", "."))
                     fill = _rate_fill(pct)
                 except ValueError:
                     pass
-            _style_body_cell(table.cell(r + 1, c), text, bold=is_bold, fill=fill)
+            _style_body_cell(table.cell(r + 1, c), text, bold=is_bold, fill=fill, size=font_pt,
+                             align=PP_ALIGN.LEFT if c in align_left_cols else PP_ALIGN.CENTER)
     return table
 
 
@@ -461,25 +466,28 @@ def _chunk(seq, size):
 def _build_trend_slides(prs, data):
     period_prev = data["period_previous"]["label"]
     period_curr = data["period_current"]["label"]
+    # "Error Rate" = jumlah error (H+M+L), "%" = persennya terhadap submission —
+    # dipisah mengikuti PPT acuan (2 Oktober 2026).
     headers = [
         "Campaign",
-        f"Submission ({period_prev})", f"Error Rate ({period_prev})",
-        f"Submission ({period_curr})",
-        "H", "M", "L", f"Error Rate ({period_curr})",
+        f"Submission ({period_prev})", f"Error Rate ({period_prev})", f"% ({period_prev})",
+        f"Submission ({period_curr})", f"Error Rate ({period_curr})", f"% ({period_curr})",
+        "H", "M", "L", "Approved",
     ]
-    rows, bold_idx = [], set()
-    for i, r in enumerate(data["trend_rows"]):
+    rows, bold_idx, group_idx = [], set(), set()
+    for r in data["trend_rows"]:
+        if r.get("is_group"):
+            group_idx.add(len(rows))
+            rows.append([r["label"]] + [""] * (len(headers) - 1))
+            continue
         if r.get("is_total"):
             bold_idx.add(len(rows))
+        p, c = r["prev"], r["curr"]
         rows.append([
             r["label"],
-            _fmt_int(r["prev"]["submission"]) if r["has_data"] else PLACEHOLDER,
-            _fmt_pct(r["prev"]["error_rate"]) if r["has_data"] else PLACEHOLDER,
-            _fmt_int(r["curr"]["submission"]) if r["has_data"] else PLACEHOLDER,
-            _fmt_int(r["curr"]["h"]) if r["has_data"] else PLACEHOLDER,
-            _fmt_int(r["curr"]["m"]) if r["has_data"] else PLACEHOLDER,
-            _fmt_int(r["curr"]["l"]) if r["has_data"] else PLACEHOLDER,
-            _fmt_pct(r["curr"]["error_rate"]) if r["has_data"] else PLACEHOLDER,
+            _fmt_int(p["submission"]), _fmt_int(p["error"]), _fmt_pct(p["error_rate"]),
+            _fmt_int(c["submission"]), _fmt_int(c["error"]), _fmt_pct(c["error_rate"]),
+            _fmt_int(c["h"]), _fmt_int(c["m"]), _fmt_int(c["l"]), _fmt_int(c["approved"]),
         ])
     # Halaman tabel Trend di PDF acuan polos (ikon pesawat kertas pojok kiri
     # atas, x kira-kira 0-3.3in / y 0-1.3in; tanpa judul ter-bakar — judul
@@ -490,12 +498,25 @@ def _build_trend_slides(prs, data):
     slide, top = _bg_table_slide(prs, _TPL_TREND, Inches(1.3))
     _add_textbox(slide, Inches(3.6), Inches(0.2), Inches(4.6), Inches(0.5),
                  "Trend Error Rate", size=22, bold=True, color=_NAVY, font=_TITLE_FONT)
-    _add_legend(slide, Inches(8.45), Inches(0.2),
-                pill_w=Inches(1.1), pill_h=Inches(0.32), font_size=10)
     _add_textbox(slide, Inches(3.6), Inches(0.82), Inches(9.3), Inches(0.35),
                  f"{period_prev} vs {period_curr}", size=11, bold=True, color=_NAVY)
     _add_table(slide, _MARGIN, top, Inches(12.5), Inches(5.8), headers, rows,
-               rate_cols={2, 7}, bold_rows=bold_idx)
+               rate_cols={3, 6}, bold_rows=bold_idx, group_rows=group_idx,
+               header_h=0.5, row_h=0.28, font_pt=9, align_left_cols={0},
+               col_widths=[Inches(2.6)] + [Inches(9.9 / 10)] * 10)
+    # Legend warna di BAWAH tabel (5 Oktober 2026, atas permintaan user), bukan di
+    # sebelah logo. Tinggi tabel diperkirakan dari jumlah baris (+ tambahan untuk
+    # label campaign panjang yang wrap jadi 2 baris); kalau sisa ruang di bawahnya
+    # tidak cukup (mepet), legend tetap di baris judul seperti semula.
+    pill_h = 0.32
+    # Kolom Campaign dilebarkan (2,6in) sehingga label terpanjang tidak wrap; header
+    # 3 baris ("Submission (September 2026)") makan sekitar 0,6in.
+    est_h = 0.6 + 0.28 * len(rows) + 0.17 * sum(1 for r in rows if len(r[0]) > 32)
+    legend_top = top / 914400 + est_h + 0.12
+    if legend_top + pill_h <= 7.3:
+        _add_legend(slide, _MARGIN, Inches(legend_top), pill_w=Inches(1.1), pill_h=Inches(pill_h), font_size=10)
+    else:
+        _add_legend(slide, Inches(8.45), Inches(0.2), pill_w=Inches(1.1), pill_h=Inches(pill_h), font_size=10)
 
 
 _HIERARCHY_BG = {
@@ -505,8 +526,8 @@ _HIERARCHY_BG = {
 
 
 def _build_hierarchy_slides(prs, title_prefix, table_rows, rows_per_slide=13):
-    """``table_rows`` = list of [name, campaign, grand_total, error_rate, h, m, l, approved]
-    dengan baris Total (per AM/SPV) ditandai lewat elemen ke-9 boolean.
+    """``table_rows`` = list of [name, campaign, submission, error_count, error_rate (%),
+    h, m, l, approved, is_total] — baris Total (per AM/SPV) ditandai elemen ke-10.
 
     Background = raster asli PDF acuan (``_TPL_AM``/``_TPL_SPV``) — judul
     "Error Rate Area Manager"/"Error Rate SPV" sudah ter-bakar di situ, jadi
@@ -521,108 +542,129 @@ def _build_hierarchy_slides(prs, title_prefix, table_rows, rows_per_slide=13):
     # Lebar tabel dipatok maksimal 70% lebar slide (atas permintaan) supaya
     # tidak nyampe ujung kanan — beda dari tabel lain yang full-width.
     table_width = Emu(int(_SLIDE_W * 0.8))
-    headers = ["Nama", "Campaign", "Grand Total", "Error Rate (%)", "H", "M", "L", "Approved"]
-    plain_rows = [r[:8] for r in table_rows]
-    bold_flags = [bool(r[8]) if len(r) > 8 else False for r in table_rows]
+    headers = ["Nama", "Campaign", "Submission", "Error Rate", "%", "H", "M", "L", "Approved"]
+    plain_rows = [
+        [r[0], r[1], _fmt_int(r[2]), _fmt_int(r[3]), _fmt_pct(r[4]),
+         _fmt_int(r[5]), _fmt_int(r[6]), _fmt_int(r[7]), _fmt_int(r[8])]
+        for r in table_rows
+    ]
+    bold_flags = [bool(r[9]) for r in table_rows]
     for chunk_i, chunk in enumerate(_chunk(list(zip(plain_rows, bold_flags)), rows_per_slide)):
         subtitle = f"(lanjutan {chunk_i + 1})" if chunk_i else None
         slide, top = _bg_table_slide(prs, bg_path, Inches(1.6), subtitle=subtitle)
         rows = [r for r, _ in chunk]
         bold_idx = {i for i, (_, b) in enumerate(chunk) if b}
         _add_table(slide, _MARGIN, top, table_width, Inches(5.75), headers, rows,
-                   rate_cols={3}, bold_rows=bold_idx)
+                   rate_cols={4}, bold_rows=bold_idx)
+
+
+_TLO_HEADERS = ["Agent ID", "Nama TLO", "Dedicate", "SPV", "Aging", "Submission",
+                "Error Rate", "%", "H", "M", "L", "Approved"]
+
+
+def _tlo_table_row(r):
+    return [
+        r["agent_id"] or "-", r["name"] or "-", r["dedicate"] or "-", r["spv"] or "-",
+        r["aging"] or "-", _fmt_int(r["ticket_count"]), _fmt_int(r["error_count"]),
+        _fmt_pct(r["error_rate"]), _fmt_int(r["risk_high"]), _fmt_int(r["risk_medium"]),
+        _fmt_int(r["risk_low"]), _fmt_int(r["approved"]),
+    ]
+
+
+# Kolom: Agent, Nama, Dedicate, SPV, Aging, Submission, Error Rate, %, H, M, L, Approved
+_TLO_COL_W = [Inches(w) for w in (1.0, 2.2, 1.1, 2.2, 1.0, 0.95, 0.85, 0.8, 0.45, 0.45, 0.45, 0.85)]
 
 
 def _build_top_tlo_slides(prs, data):
     """Background = raster asli PDF acuan per bucket masa kerja (``_TPL_TOPTLO``)
     — judul "Error Rate - Top 10 TLO" dan "Join Date {bucket}" sudah ter-bakar
-    di situ (jadi tidak digambar ulang), TERMASUK paragraf "TOP 3 return
-    reason" asli yang sengaja DIHAPUS karena datanya basi (Agustus 2026) dan
-    sistem QC ini tidak memodelkan alasan retur sebagai data terstruktur —
-    lihat docstring ``_TPL_TOPTLO``."""
-    headers = ["Agent ID", "Nama TLO", "Dedicate", "SPV", "Join Date",
-               "Grand Total", "Error Rate (%)", "H", "M", "L", "Approved"]
-    for bucket, rows_in in data["top_tlo"].items():
-        rows = [
-            [
-                r["agent_id"] or "-", r["name"] or "-", r["dedicate"] or "-",
-                r["spv"] or "-", r["join_date"] or "-",
-                _fmt_int(r["ticket_count"]), _fmt_pct(r["error_rate"]),
-                _fmt_int(r["risk_high"]), _fmt_int(r["risk_medium"]), _fmt_int(r["risk_low"]),
-                _fmt_int(r["approved"]),
-            ]
-            for r in rows_in
-        ]
+    di situ (jadi tidak digambar ulang). Paragraf "TOP 3 return reason" asli
+    sengaja dihapus dari raster (datanya basi, Agustus 2026) dan digambar ulang
+    di sini dari data bulan berjalan: top 3 failure reason (negasi requirement
+    scorecard) dari 10 TLO di tabel itu, per bucket aging (2 Oktober 2026).
+    Kolom tanggal join diganti ``Aging`` (0-6 / 6-12 / > 12 bulan)."""
+    for bucket, block in data["top_tlo"].items():
+        rows_in = block["rows"]
+        rows = [_tlo_table_row(r) for r in rows_in]
         bg_path = _TPL_TOPTLO.get(bucket)
-        top = Inches(2.6)
+        top = Inches(2.45)
         if bg_path and bg_path.exists():
-            # Tidak pakai parameter subtitle _bg_table_slide (itu ditaruh DI
-            # ATAS content_top) — di sini area itu sudah dipakai judul+"Join
-            # Date {bucket}" bakaran.
             slide, top = _bg_table_slide(prs, bg_path, top)
+            # Subtitle "Join Date {bucket}" ter-bakar di raster — ditutup kuning
+            # polos (area itu tidak berisi ornamen) lalu diganti "Aging {bucket}".
+            # Textbox berisi (bukan autoshape) supaya tidak kena shadow bawaan tema;
+            # warna = pixel kuning raster (255,223,88), sedikit beda dari ``_YELLOW``.
+            cover = slide.shapes.add_textbox(Inches(0.1), Inches(1.65), Inches(5.2), Inches(0.65))
+            cover.fill.solid()
+            cover.fill.fore_color.rgb = RGBColor(255, 223, 88)
+            _add_textbox(slide, Inches(0.2), Inches(1.7), Inches(5.0), Inches(0.55),
+                         f"Aging {bucket}", size=24, bold=True, color=_NAVY, font=_TITLE_FONT)
         else:
-            slide, top = _table_slide(prs, "Error Rate — Top 10 TLO", f"Join Date {bucket}")
+            slide, top = _table_slide(prs, "Error Rate — Top 10 TLO", f"Aging {bucket}")
         if rows:
-            _add_table(slide, _MARGIN, top, Inches(12.5), Inches(4.7), headers, rows, rate_cols={6})
+            _add_table(slide, _MARGIN, top, Inches(12.5), Inches(3.1), _TLO_HEADERS, rows,
+                       col_widths=_TLO_COL_W, rate_cols={7}, header_h=0.4, row_h=0.27, font_pt=8.5,
+                       align_left_cols={1, 3})
         else:
             _add_textbox(slide, _MARGIN, top, Inches(12), Inches(1),
-                         "Tidak ada TLO dengan submission pada periode ini di bucket masa kerja ini.",
+                         "Tidak ada TLO dengan submission pada periode ini di bucket aging ini.",
                          size=14, color=_GRAY_FG)
+        label = bucket.lower()
+        box = slide.shapes.add_textbox(Inches(3.6), Inches(5.75), Inches(9.3), Inches(1.6))
+        tf = box.text_frame
+        tf.word_wrap = True
+        lines = [(f"Dari {_fmt_int(block['total_tlo'])} TLO dengan masa kerja {label}, terdapat "
+                  f"{_fmt_int(block['over_6'])} TLO dengan error rate > 6%. "
+                  f"Berikut adalah TOP 3 failure reason:", _NAVY)]
+        reasons = block["reasons"] or ["Belum ada data failure reason."]
+        lines += [(f"{i}. {t}", _RED) for i, t in enumerate(reasons, 1)] if block["reasons"] else [(reasons[0], _GRAY_FG)]
+        for i, (text, color) in enumerate(lines):
+            para = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+            run = para.add_run()
+            run.text = text
+            run.font.size = Pt(13)
+            run.font.bold = True
+            run.font.name = _BODY_FONT
+            run.font.color.rgb = color
 
 
 def _build_error_reason_slides(prs, data):
-    # Dua slide TERPISAH per campaign (kategori, lalu top TLO terburuk) — bukan
-    # digabung satu slide seperti PPT acuan: jumlah baris kategori & agent di
-    # sini datang langsung dari data (bisa 0-6 dan 0-10), sehingga tinggi
-    # gabungannya tidak bisa dipastikan selalu muat dalam satu slide tanpa
-    # saling tumpang tindih. Memisahkannya menjamin tidak pernah overlap
-    # berapa pun jumlah barisnya.
+    # Satu slide per campaign (2 Oktober 2026, atas permintaan user): top 3
+    # kategori error terbanyak di atas, dan di bawahnya top 10 TLO ber-error-rate
+    # tertinggi campaign itu. Baris dibatasi 3 + 10 (tinggi baris dipadatkan), jadi
+    # muat satu slide tanpa tumpang tindih — jauh berbeda dari versi lama yang
+    # jumlah barisnya bebas dan harus dipisah dua slide. Tidak ada kata "terburuk".
     for camp in data["error_reason"]:
         # Campaign tanpa kategori maupun agent sama sekali pada periode ini
-        # (28 September 2026, atas permintaan user: "yang datanya tidak ada
-        # di dashboard itu tidak perlu ditampilkan") — dilewati SELURUHNYA,
-        # bukan dibikinkan slide kosong "tidak ada data". Beda dengan
-        # campaign yang cuma salah satu kosong (ada kategori tapi TLO-nya
-        # belum ada, atau sebaliknya) — itu tetap tampil apa adanya di bawah.
+        # dilewati SELURUHNYA (28 September 2026) — bukan slide kosong.
         if not camp["categories"] and not camp["top_agents"]:
             continue
 
-        slide, top = _table_slide(prs, f"Detail Error Reason — {camp['label']}",
-                                   f"Periode {data['period_current']['label']}", bg_path=_TPL_DETAIL)
-        # Contoh alasan disederhanakan (28 September 2026, atas permintaan
-        # user) — dipotong lebih pendek dari sebelumnya (110 char), cukup
-        # cuplikan singkat, bukan alasan lengkap apa adanya.
+        title = f"{camp['group']} - {camp['label']}" if camp.get("group") else camp["label"]
+        slide, top = _table_slide(prs, title, f"Detail Error Reason — Periode {data['period_current']['label']}",
+                                  bg_path=_TPL_DETAIL)
         cat_headers = ["Kategori", "Contoh Alasan Teratas", "Fail Count"]
-        cat_rows = [
-            [c["category"], _truncate(c["example"], 50), _fmt_int(c["fail_count"])]
-            for c in camp["categories"][:8]
-        ]
+        cat_rows = [[c["category"], c["example"], _fmt_int(c["fail_count"])] for c in camp["categories"][:3]]
         if cat_rows:
-            _add_table(slide, _MARGIN, top, Inches(12.5), Inches(5.8), cat_headers, cat_rows)
+            _add_table(slide, _MARGIN, top, Inches(12.5), Inches(1.7), cat_headers, cat_rows,
+                       col_widths=[Inches(3.8), Inches(7.0), Inches(1.7)], header_h=0.35, row_h=0.38,
+                       align_left_cols={0, 1})
         else:
             _add_textbox(slide, Inches(0), top, _SLIDE_W, Inches(0.4),
                          "Tidak ada kategori error pada periode ini.", size=12, bold=True, color=_NAVY,
                          align=PP_ALIGN.CENTER)
-
-        slide2, top2 = _table_slide(prs, f"Top 10 TLO Terburuk — {camp['label']}",
-                                     f"Periode {data['period_current']['label']}", bg_path=_TPL_DETAIL)
-        # Cuma kolom Fail Rate (28 September 2026, atas permintaan user) —
-        # TANPA kolom "Evaluated" dan tanpa ikut skema risk-based (H/M/L) &
-        # kolom lain (Dedicate/SPV/Join Date/Approved) dari tabel Top 10 TLO
-        # utama (``_build_top_tlo_slides``); tabel ini murni angka Fail
-        # Tickets/Fail Rate dari agregasi Failure Rate apa adanya.
-        agent_headers = ["Agent ID", "Nama", "Fail Tickets", "Fail Rate (%)"]
-        agent_rows = [
-            [a["agent_id"] or "-", a["name"] or "-", _fmt_int(a["fail_tickets"]),
-             _fmt_pct(a["fail_rate"])]
-            for a in camp["top_agents"]
-        ]
+        tlo_top = Inches(3.35)
+        _add_textbox(slide, _MARGIN, tlo_top - Inches(0.38), Inches(12.5), Inches(0.35),
+                     "Top 10 TLO — Error Rate", size=12, bold=True, color=_NAVY)
+        agent_rows = [_tlo_table_row(a) for a in camp["top_agents"]]
         if agent_rows:
-            _add_table(slide2, _MARGIN, top2, Inches(12.5), Inches(5.8), agent_headers, agent_rows, rate_cols={3})
+            _add_table(slide, _MARGIN, tlo_top, Inches(12.5), Inches(3.3), _TLO_HEADERS, agent_rows,
+                       col_widths=_TLO_COL_W, rate_cols={7}, header_h=0.4, row_h=0.29, font_pt=8.5,
+                       align_left_cols={1, 3})
         else:
-            _add_textbox(slide2, Inches(0), top2, _SLIDE_W, Inches(0.4),
-                         "Tidak ada TLO dengan tiket Not Qualified pada periode ini.", size=12, bold=True,
-                         color=_NAVY, align=PP_ALIGN.CENTER)
+            _add_textbox(slide, Inches(0), tlo_top, _SLIDE_W, Inches(0.4),
+                         "Belum ada TLO dengan submission pada campaign ini di periode ini.", size=12,
+                         bold=True, color=_NAVY, align=PP_ALIGN.CENTER)
 
 
 def build_error_rate_pptx(data: dict) -> io.BytesIO:

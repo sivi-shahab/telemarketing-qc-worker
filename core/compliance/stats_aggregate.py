@@ -1651,7 +1651,8 @@ def _fail_node(acc: dict, limit: "int | None" = _FAIL_TOP_CATEGORIES,
 
 
 def compute_failure_reasons_hierarchy(db, campaign: str = None, campaigns: list = None,
-                                      date_start=None, date_end=None) -> dict:
+                                      date_start=None, date_end=None,
+                                      agent_requirements: "dict | None" = None) -> dict:
     """Failure Reason yang dipecah menurut hierarki sales: Area Manager -> Team
     Leader -> Agent, masing-masing dengan kategori scorecard yang paling sering
     gagal DI SIMPUL ITU.
@@ -1675,6 +1676,12 @@ def compute_failure_reasons_hierarchy(db, campaign: str = None, campaigns: list 
 
     ``date_start``/``date_end`` — lihat ``compute_failure_reasons``; filter tanggal
     yang sama dengan sub-tab Agregat dan dengan tab Failure Rate.
+
+    ``agent_requirements`` (opsional, dict keluaran) — bila diberikan, diisi
+    ``{agent_id.casefold(): {requirement: jumlah}}`` untuk tiket Not Qualified tiap
+    agent. Sengaja BUKAN bagian payload balikan: rincian per sales agent berhenti di
+    kategori (lihat ``_fail_node``), jadi teks requirement hanya boleh dipakai
+    pemanggil server-side (PPT Error Rate), tidak ikut ke respons/snapshot.
     """
     done_results = done_results_query(db, campaign, campaigns).all()
     if date_start is not None or date_end is not None:
@@ -1763,6 +1770,10 @@ def compute_failure_reasons_hierarchy(db, campaign: str = None, campaigns: list 
         })
         for acc in (grand, am_acc[am], tl_acc[(am, tl)], agent_acc[(am, tl, akey)]):
             _fail_acc_add(acc, failures)
+        if agent_requirements is not None and agent_id:
+            _reqs = agent_requirements.setdefault(agent_id.casefold(), {})
+            for _cat, _req, _reason in failures:
+                _reqs[_req] = _reqs.get(_req, 0) + 1
         # Satu tiket = satu akumulator mini, lalu dibentuk lewat ``_fail_node`` yang
         # sama dengan simpul di atasnya. Itu yang menjamin kolomnya dihitung dengan
         # aturan identik dan tidak melenceng kalau definisinya diubah lagi nanti.
@@ -2973,8 +2984,46 @@ def _tenure_bucket(join_date, as_of) -> "str | None":
     return _AGING_BUCKETS[2]
 
 
-def compute_top_tlo_by_aging(db, hierarchy: dict, as_of: date, top_n: int = 10) -> dict:
-    """Top-N TLO (agent) per Error Rate, dikelompokkan per bucket masa kerja.
+def _tlo_rows(db, hierarchy: dict, as_of: date) -> list:
+    """Satu baris per TLO (agent) yang punya submission pada ``hierarchy``, lengkap
+    dengan bucket masa kerja (``aging``; "-" bila tanggal ``JOIN POSISI``-nya tidak
+    diketahui) dan jumlah error (H+M+L). Sumber bersama Top 10 TLO per aging dan
+    Top 10 TLO per campaign."""
+    sales_map = active_sales_map(db)
+    rows = []
+    for am in hierarchy.get("area_managers") or []:
+        for tl in am.get("team_leaders") or []:
+            for agent in tl.get("agents") or []:
+                if not agent.get("ticket_count"):
+                    continue
+                agent_id = (agent.get("agent_id") or "").strip()
+                entry = sales_map.get(agent_id.casefold()) if agent_id else None
+                join_date = entry.get("join_date") if entry else None
+                h, m, l = agent.get("risk_high", 0), agent.get("risk_medium", 0), agent.get("risk_low", 0)
+                rows.append({
+                    "agent_id": agent_id,
+                    "name": agent.get("name"),
+                    "dedicate": (entry.get("dedicated") if entry else None) or "-",
+                    "spv": tl.get("name"),
+                    "aging": _tenure_bucket(join_date, as_of) or "-",
+                    "ticket_count": agent.get("ticket_count", 0),
+                    "error_count": h + m + l,
+                    "error_rate": agent.get("error_rate", 0.0),
+                    "risk_high": h,
+                    "risk_medium": m,
+                    "risk_low": l,
+                    "approved": agent.get("approve", 0),
+                })
+    return rows
+
+
+def _tlo_rank_key(a: dict):
+    return (a["error_rate"], a["ticket_count"])
+
+
+def compute_top_tlo_by_aging(db, hierarchy: dict, as_of: date, top_n: int = 10,
+                             summary_out: "dict | None" = None) -> dict:
+    """Top-N TLO (agent) per Error Rate, dikelompokkan per bucket masa kerja (aging).
 
     ``hierarchy`` = pohon Area Manager -> Team Leader -> Agent dari
     ``compute_stats_snapshot(...)["hierarchy"]`` UNTUK PERIODE YANG SAMA dengan
@@ -2989,40 +3038,34 @@ def compute_top_tlo_by_aging(db, hierarchy: dict, as_of: date, top_n: int = 10) 
     Hanya TLO yang punya submission pada periode ini (``ticket_count > 0``) dan
     tanggal ``JOIN POSISI``-nya diketahui di roster yang ikut diranking.
 
+    ``summary_out`` (opsional, dict keluaran) diisi ``{bucket: {"total": jumlah TLO
+    di bucket, "over_6": yang error rate-nya > 6%}}`` — bahan kalimat "Dari N TLO
+    ... terdapat M TLO dengan error rate > 6%" di slide Top 10 TLO.
+
     Kolom %KPI Juli/Agustus + status kode (U/A/S/E1-E3) dari PPT acuan TIDAK ada
-    di sini — data itu tidak tersedia di sistem QC ini (lihat gap analysis);
-    pemanggil (``compliance.ppt_error_rate``) yang mengisi placeholder-nya.
+    di sini — data itu tidak tersedia di sistem QC ini (lihat gap analysis).
     """
-    sales_map = active_sales_map(db)
     buckets: dict = {b: [] for b in _AGING_BUCKETS}
-    for am in hierarchy.get("area_managers") or []:
-        for tl in am.get("team_leaders") or []:
-            for agent in tl.get("agents") or []:
-                if not agent.get("ticket_count"):
-                    continue
-                agent_id = (agent.get("agent_id") or "").strip()
-                entry = sales_map.get(agent_id.casefold()) if agent_id else None
-                join_date = entry.get("join_date") if entry else None
-                bucket = _tenure_bucket(join_date, as_of)
-                if bucket is None:
-                    continue
-                buckets[bucket].append({
-                    "agent_id": agent_id,
-                    "name": agent.get("name"),
-                    "dedicate": (entry.get("dedicated") if entry else None) or "-",
-                    "spv": tl.get("name"),
-                    "join_date": join_date.isoformat() if join_date else None,
-                    "ticket_count": agent.get("ticket_count", 0),
-                    "error_rate": agent.get("error_rate", 0.0),
-                    "risk_high": agent.get("risk_high", 0),
-                    "risk_medium": agent.get("risk_medium", 0),
-                    "risk_low": agent.get("risk_low", 0),
-                    "approved": agent.get("approve", 0),
-                })
+    for r in _tlo_rows(db, hierarchy, as_of):
+        if r["aging"] in buckets:
+            buckets[r["aging"]].append(r)
     for b in buckets:
-        buckets[b].sort(key=lambda a: (a["error_rate"], a["ticket_count"]), reverse=True)
+        if summary_out is not None:
+            summary_out[b] = {
+                "total": len(buckets[b]),
+                "over_6": sum(1 for a in buckets[b] if (a["error_rate"] or 0) > 6),
+            }
+        buckets[b].sort(key=_tlo_rank_key, reverse=True)
         buckets[b] = buckets[b][:top_n]
     return buckets
+
+
+def compute_top_tlo_flat(db, hierarchy: dict, as_of: date, top_n: int = 10) -> list:
+    """Top-N TLO per Error Rate dari satu ``hierarchy`` (mis. satu campaign),
+    tanpa pengelompokan aging — aging tetap dibawa di tiap baris."""
+    rows = _tlo_rows(db, hierarchy, as_of)
+    rows.sort(key=_tlo_rank_key, reverse=True)
+    return rows[:top_n]
 
 
 def compute_qc_performance(db) -> list:

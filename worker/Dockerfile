@@ -39,6 +39,7 @@ COPY core/compliance      /app/compliance
 COPY core/services        /app/services
 COPY core/prompt          /app/prompt
 COPY core/sales_lookup.py /app/sales_lookup.py
+COPY core/qc_auto_assign.py /app/qc_auto_assign.py
 COPY core/core_config.py  /app/core_config.py
 
 COPY worker  /app/worker
