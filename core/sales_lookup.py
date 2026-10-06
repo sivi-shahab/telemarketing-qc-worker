@@ -95,12 +95,17 @@ def _agent_ids_by(db, field: str, value: str, campaigns=None) -> set:
     if not key:
         return set()
     out = set()
-    for uid, entry in active_sales_map(db).items():
+    roster = active_sales_map(db)
+    # ID BARU (roster 30 September 2026) ikut, supaya tiket ber-agent_id baru
+    # tetap masuk cakupan TL/AM-nya.
+    aliases_of = getattr(roster, "aliases_of", lambda uid: ())
+    for uid, entry in roster.items():
         if _norm(entry.get(field)) != key:
             continue
         if not _dedicated_matches(entry, campaigns):
             continue
         out.add(uid)
+        out.update(aliases_of(uid))
     return out
 
 
