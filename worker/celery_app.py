@@ -9,6 +9,9 @@ from services import data_dwh
 # berubah); cache Redis 30 hari hanya untuk halaman. Worker tetap MENULIS ke Redis
 # sehingga halaman ikut segar sesudah tiket dinilai (28 September 2026).
 data_dwh.set_redis_read(False)
+# Cache App A lama tanpa agent_id/submit_time dilengkapi dari endpoint asli
+# (6 Oktober 2026) -- lihat services/data_dwh.set_fill_cashline_ids.
+data_dwh.set_fill_cashline_ids(True)
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6378/0")
 CELERY_CONCURRENCY = int(os.getenv("CELERY_CONCURRENCY", "4"))

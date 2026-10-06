@@ -98,6 +98,29 @@ _REDIS_READ = True
 _redis_state = {"client": None, "down_until": 0.0}
 
 
+# [6 Oktober 2026] Cache App A (``cashline-ntb-asscend``) masih menyimpan baris lama
+# yang dibuat SEBELUM ``agent_id``/``submit_time`` masuk daftar field cache-nya.
+# Jawabannya HTTP 200, jadi endpoint asli tidak pernah ditanya: 176 dari 350 snapshot
+# Cashline tersimpan tanpa kedua key itu ("Agent Tidak Terpetakan", tenggat H+2
+# dianggap lewat). Bila flag ini aktif, cashline yang TIDAK PUNYA key-nya (bukan
+# sekadar bernilai null) ditanyakan ulang ke endpoint asli. Hanya worker & skrip
+# backfill yang menyalakannya: endpoint asli lambat (timeout 10 dtk), halaman API
+# tidak boleh menunggunya untuk setiap tiket.
+_CASHLINE_ID_FIELDS = ("agent_id", "submit_time")
+_FILL_CASHLINE_IDS = False
+
+
+def set_fill_cashline_ids(enabled: bool) -> None:
+    """True untuk worker/backfill: cache App A tanpa agent_id/submit_time -> endpoint asli."""
+    global _FILL_CASHLINE_IDS
+    _FILL_CASHLINE_IDS = bool(enabled)
+
+
+def _cashline_ids_missing(bundle: dict) -> bool:
+    cashline = (bundle or {}).get("cashline")
+    return isinstance(cashline, dict) and any(f not in cashline for f in _CASHLINE_ID_FIELDS)
+
+
 def set_redis_read(enabled: bool) -> None:
     """False untuk worker evaluasi: jangan BACA L2 (selalu segar), tetap TULIS."""
     global _REDIS_READ
@@ -247,6 +270,15 @@ def fetch_bundle_checked(result_id: str) -> tuple[dict, bool]:
     # --- 1. Coba endpoint CACHE (database App A, cepat) dulu ---
     cache_url = DWH_API_BASE_URL + _API_PATH_CACHE.format(result_id=rid)
     bundle, status = _fetch_from_url(cache_url)
+    if bundle is not None and _FILL_CASHLINE_IDS and _cashline_ids_missing(bundle):
+        # Baris cache App A versi lama -- lengkapi dari endpoint asli. Kalau endpoint
+        # asli gagal, tetap pakai isi cache: tidak lebih buruk dari sebelumnya.
+        original, _ = _fetch_from_url(DWH_API_BASE_URL + _API_PATH_ORIGINAL.format(result_id=rid))
+        if original is not None and not _cashline_ids_missing(original):
+            bundle = original
+        else:
+            logger.warning("[data-dwh] cache result_id=%s tanpa agent_id/submit_time, "
+                           "endpoint asli tidak melengkapinya -- pakai isi cache", rid)
     if bundle is not None:
         # Cache hit -- langsung pakai, TIDAK perlu panggil endpoint asli.
         _cache_put(rid, bundle)
