@@ -1278,7 +1278,15 @@ def _stats_signature(db: Session) -> str:
     #      Cashline (bobot MUS 36.75 -> 50, tanpa suku MUS CC 13.25) dan skor akhir
     #      dipatok minimal 0; keduanya dihitung saat baca, jadi skor/status tiket
     #      lama bisa berubah tanpa ada data baru.
-    version = "v26"
+    # v27: tiga perubahan 6 Oktober 2026 yang menggeser isi snapshot TANPA data baru
+    #      (signature lama tetap cocok, sehingga tab Failure Rate terus menyajikan
+    #      pohon "(Tidak diketahui)" dengan 352 tiket PENDING):
+    #      * agent tidak terpetakan tidak lagi memaksa PENDING (PENDING_DATA_GAPS);
+    #      * parser roster menerima USER ID LAMA/BARU + JOIN ONLINE — roster
+    #        30 September 2026 sebelumnya terbaca 0 agent, path file-nya sama;
+    #      * backfill agent_id/submit_time ke 176 snapshot reference_data — ditulis
+    #        di tempat, jumlah & created_at result_data tidak berubah.
+    version = "v27"
     sla = "1" if get_doc_sla_enabled(db) else "0"
     # Sidik jari daftar tersembunyi. WAJIB ikut: tanpa ini snapshot yang sudah
     # ter-cache akan terus menyajikan angka tiket yang baru disembunyikan sampai ada
