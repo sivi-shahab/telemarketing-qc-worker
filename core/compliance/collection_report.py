@@ -24,6 +24,11 @@ REPORT_TYPE = "collection_weighted"
 # model (pernah keluar 87 dari 150 dan 120.6 dari 134 untuk prompt yang sama).
 PASSING_GRADE_RATIO = 0.9
 
+# Scorecard v01 (Okt 2026) membagi item ke dua kasus. Etika adalah gerbang: satu
+# item etika BELUM_SESUAI menolkan skor akhir, berapa pun poin item lainnya.
+CASE_STANDARD = "standard_penagihan"
+CASE_ETIKA = "etika_penagihan"
+
 UNAVAILABLE = "TIDAK_TERSEDIA"
 _PASS_FAIL = {"PASS", "FAIL"}
 _COMMITMENT = {"COMMITTED_TO_PAY", "PARTIAL_COMMITMENT", "DISPUTE", "REFUSED", "NOT_STATED"}
@@ -177,7 +182,7 @@ def _scorecard(value):
         else:
             score = None
         prose = it["evidence"] if isinstance(it.get("evidence"), str) else ""
-        out.append({
+        row = {
             "category": _str(it.get("category"), "-"),
             "item_code": _str(it.get("item_code"), "-"),
             "requirement": _str(it.get("requirement")),
@@ -188,8 +193,47 @@ def _scorecard(value):
             "item_score": score,
             "reason": _str(it.get("reason")) or prose,
             "evidence": _evidence(it.get("evidence")),
-        })
+        }
+        # Kasus & sifat opsional ditempel apply_configured_weights dari scorecard;
+        # disimpan di item supaya pembacaan ulang bisa menghitung ulang ringkasan kasus.
+        if isinstance(it.get("case"), str) and it["case"].strip():
+            row["case"] = it["case"].strip()
+        if isinstance(it.get("optional"), bool):
+            row["optional"] = it["optional"]
+        out.append(row)
     return out
+
+
+def _case_summary(scorecard):
+    """Ringkasan per kasus, dihitung dari item — ``case_summary`` model tidak dibaca.
+
+    Item opsional adalah bonus: masuk ``optional_earned`` hanya bila SESUAI, dan
+    tidak masuk ``mandatory_weight``. Etika FAIL bila ada item BELUM_SESUAI; standard
+    FAIL bila ada item wajib non-tolerable yang BELUM_SESUAI."""
+    cases = {}
+    for it in scorecard:
+        case = it.get("case")
+        if not case:
+            continue
+        c = cases.setdefault(case, {"case": case, "max_points": 0, "mandatory_weight": 0,
+                                    "mandatory_earned": 0, "optional_earned": 0,
+                                    "case_points": 0, "case_result": "PASS"})
+        optional = it.get("optional") is True
+        score = it["item_score"] or 0
+        c["max_points"] += it["weight"]
+        if optional:
+            c["optional_earned"] += score if it["status"] == "SESUAI" else 0
+        else:
+            c["mandatory_weight"] += it["weight"]
+            c["mandatory_earned"] += score
+        failed = it["status"] == "BELUM_SESUAI"
+        if failed and (case == CASE_ETIKA or (not optional and it["tolerable"].upper() == "NO")):
+            c["case_result"] = "FAIL"
+    for c in cases.values():
+        for k in ("max_points", "mandatory_weight", "mandatory_earned", "optional_earned"):
+            c[k] = _round1(c[k])
+        c["case_points"] = _round1(c["mandatory_earned"] + c["optional_earned"])
+    return list(cases.values())
 
 
 def _error_codes(value):
@@ -214,46 +258,76 @@ def _error_codes(value):
     return out
 
 
-def scorecard_maximum(scorecard_text):
-    """Jumlah kolom ``weight`` scorecard campaign (JSON array), atau None."""
+def _configured_items(scorecard_text):
+    """Item scorecard campaign sebagai list dict, atau None bila tidak terbaca.
+
+    Dua bentuk diterima: array datar ``[{item_code, weight}]`` (sebelum v01) dan
+    bentuk berkasus v01 ``[{"standard_penagihan": {"items": [...]}, ...}]`` — tiap
+    item bentuk kedua diberi ``case`` sesuai kunci kasusnya."""
     try:
         parsed = json.loads(scorecard_text)
     except (TypeError, ValueError):
         return None
+    flat_allowed = isinstance(parsed, list)
+    if isinstance(parsed, dict):
+        parsed = [parsed]
     if not isinstance(parsed, list):
         return None
-    total = sum(_num(i.get("weight")) or 0 for i in parsed if isinstance(i, dict))
+    items = []
+    for entry in parsed:
+        if not isinstance(entry, dict):
+            continue
+        if "item_code" in entry or "weight" in entry:
+            if not flat_allowed:
+                continue
+            items.append(entry)
+            continue
+        for case, block in entry.items():
+            if isinstance(block, dict) and isinstance(block.get("items"), list):
+                items.extend({**i, "case": case} for i in block["items"] if isinstance(i, dict))
+    return items
+
+
+def scorecard_maximum(scorecard_text):
+    """Jumlah kolom ``weight`` scorecard campaign, atau None."""
+    items = _configured_items(scorecard_text)
+    if not items:
+        return None
+    total = sum(_num(i.get("weight")) or 0 for i in items)
     return total if total > 0 else None
 
 
 def apply_configured_weights(raw, scorecard_text):
     """Salinan ``raw`` dengan bobot tiap item ``scorecard_result`` diambil dari
-    scorecard campaign (JSON array ``{item_code, weight}``) bila item_code-nya ada.
+    scorecard campaign bila item_code-nya ada — begitu pula ``case`` dan
+    ``optional`` bila scorecard memuatnya.
 
     Bobot adalah konfigurasi, bukan keluaran model: tanpa ini model bisa menaikkan
     bobot item yang ia nilai SESUAI. Item yang tidak ada di konfigurasi, atau
     konfigurasi yang tidak terbaca, dibiarkan apa adanya. Masukan tidak diubah."""
     if not isinstance(raw, dict) or not isinstance(raw.get("scorecard_result"), list):
         return raw
-    try:
-        parsed = json.loads(scorecard_text)
-    except (TypeError, ValueError):
-        return raw
-    if not isinstance(parsed, list):
-        return raw
-    weights = {}
-    for item in parsed:
-        if isinstance(item, dict) and isinstance(item.get("item_code"), str):
-            w = _num(item.get("weight"))
-            if w is not None:
-                weights[item["item_code"].strip()] = w
-    if not weights:
+    config = {}
+    for item in _configured_items(scorecard_text) or []:
+        if not isinstance(item.get("item_code"), str):
+            continue
+        fields = {}
+        w = _num(item.get("weight"))
+        if w is not None:
+            fields["weight"] = w
+        if isinstance(item.get("case"), str):
+            fields["case"] = item["case"]
+        if isinstance(item.get("optional"), bool):
+            fields["optional"] = item["optional"]
+        if fields:
+            config[item["item_code"].strip()] = fields
+    if not config:
         return raw
     items = []
     for it in raw["scorecard_result"]:
         code = it.get("item_code") if isinstance(it, dict) else None
-        if isinstance(code, str) and code.strip() in weights:
-            it = {**it, "weight": weights[code.strip()]}
+        if isinstance(code, str) and code.strip() in config:
+            it = {**it, **config[code.strip()]}
         items.append(it)
     return {**raw, "scorecard_result": items}
 
@@ -271,6 +345,18 @@ def normalize_weighted_report(value, configured_maximum=None):
     earned = _round1(sum(i["item_score"] or 0 for i in scorecard))
     passing = _round1(maximum * PASSING_GRADE_RATIO)
 
+    # Scorecard berkasus (v01): item opsional adalah bonus, jadi ambang lulus diukur
+    # dari bobot item wajib saja; satu pelanggaran etika menolkan skor akhir.
+    cases = _case_summary(scorecard)
+    base_maximum = None
+    etika_failed = False
+    if cases:
+        base_maximum = _round1(sum(c["mandatory_weight"] for c in cases))
+        passing = _round1(base_maximum * PASSING_GRADE_RATIO)
+        etika_failed = any(c["case"] == CASE_ETIKA and c["case_result"] == "FAIL" for c in cases)
+        if etika_failed:
+            earned = 0
+
     report = {
         "call_id": _str(raw.get("call_id"), "-"),
         "consumer_full_name": raw["consumer_full_name"] if isinstance(raw.get("consumer_full_name"), str) else None,
@@ -279,11 +365,13 @@ def normalize_weighted_report(value, configured_maximum=None):
         "agunan_discussion_status": "INITIATED" if raw.get("agunan_discussion_status") == "INITIATED" else "NOT_INITIATED",
         "commitment_status": _commitment(raw.get("commitment_status")),
         "maximum_score": maximum,
+        "base_maximum_score": base_maximum,
         "passing_grade": passing,
         "ai_score_phase_2": earned,
         # Laporan tanpa apa pun untuk dinilai bukan kelulusan.
-        "ai_status": "PASS" if maximum > 0 and earned >= passing else "FAIL",
+        "ai_status": "PASS" if maximum > 0 and not etika_failed and earned >= passing else "FAIL",
         "scorecard_result": scorecard,
+        "case_summary": cases,
         "category_summary": _categories(raw.get("category_summary")),
         "critical_compliance_check": _critical(raw.get("critical_compliance_check")),
         "collection_data_verification": _verification(raw.get("collection_data_verification")),
@@ -361,4 +449,17 @@ def collection_list_row(result, result_json):
         "critical_status": report["critical_compliance_check"]["status"] if report else None,
         "commitment_status": report["commitment_status"]["status"] if report else None,
         "error_code_count": len(report["error_codes"]) if report else 0,
+        **_case_columns(report["case_summary"] if report else []),
     }
+
+
+def _case_columns(cases):
+    """Kolom Standard/Etika tabel; None untuk laporan scorecard datar (pra-v01)."""
+    by_case = {c["case"]: c for c in cases}
+    out = {}
+    for prefix, case in (("standard", CASE_STANDARD), ("etika", CASE_ETIKA)):
+        c = by_case.get(case)
+        out[f"{prefix}_score"] = c["case_points"] if c else None
+        out[f"{prefix}_maximum"] = c["max_points"] if c else None
+        out[f"{prefix}_status"] = c["case_result"] if c else None
+    return out
