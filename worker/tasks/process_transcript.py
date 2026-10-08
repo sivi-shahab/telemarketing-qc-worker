@@ -76,12 +76,14 @@ from compliance.reference_data import (
 from compliance.sales_roster import parse_roster
 from prompt.recording_type import TAG_LABELS, TAG_UTAMA
 from db import crud
+from worker import attempts
 from worker.celery_app import celery_app
 from worker.config import get_worker_settings
 
 logger = logging.getLogger(__name__)
 
 TMP_ROOT = "/tmp/transcripts"
+_TASK = "process_transcript"
 
 # Bucket database sales (roster "Update Sales Telemarketing …xlsx"). Namanya sama
 # dengan default di ``config.BaseAppSettings.minio_bucket_sales_database``.
@@ -370,6 +372,21 @@ def process_transcript(result_id: str):
             logger.warning("result %s sudah %s — pesan dikirim ulang, dilewati",
                            result_id, result.status)
             return {"result_id": str(result_id), "status": "skipped"}
+
+        # 0b. Batas percobaan: pesan yang kembali karena prosesnya mati mendadak
+        # (SIGKILL/OOM, batas waktu keras) dimulai lagi dari nol dan bisa mati lagi di
+        # titik yang sama tanpa akhir — worker kube, 8 Oktober 2026. Lihat worker/attempts.py.
+        percobaan = attempts.mulai(_TASK, str(result_id))
+        if percobaan > attempts.MAX_ATTEMPTS:
+            tahap_terakhir = getattr(result, "current_stage", None)
+            logger.error("result %s: proses mati mendadak %d kali (tahap terakhir %s) — "
+                         "dihentikan", result_id, percobaan - 1, tahap_terakhir)
+            crud.update_result_status(
+                db, result_id, "failed",
+                error_message=attempts.pesan_habis(percobaan - 1, tahap_terakhir),
+            )
+            return {"result_id": str(result_id), "status": "failed",
+                    "reason": "max_attempts"}
 
         # 1. mark processing
         crud.update_result_status(db, result_id, "processing", started_at=started_at)
@@ -848,6 +865,9 @@ def process_transcript(result_id: str):
         raise
 
     finally:
+        # Berakhir normal (sukses, gagal biasa, atau dihentikan batas di atas). Proses
+        # yang di-SIGKILL tidak sampai ke sini — justru itu yang dihitung.
+        attempts.selesai(_TASK, str(result_id))
         db.close()
         # 10. cleanup temp dir
         shutil.rmtree(os.path.join(TMP_ROOT, str(result_id)), ignore_errors=True)
