@@ -562,6 +562,32 @@ class QcAssignment(Base):
     assigned_at = Column(DateTime, server_default=func.now())
 
 
+class QcAssignmentEvent(Base):
+    """Jejak audit APPEND-ONLY setiap perubahan ``QcAssignment`` (12 Oktober 2026).
+
+    ``QcAssignment`` menyimpan KEPEMILIKAN TERKINI saja — re-assign menimpa barisnya
+    dan "Lepas" menghapusnya — jadi tanpa tabel ini tidak ada cara mengetahui siapa
+    pernah memegang tiket, siapa yang memindahkan atau melepasnya, dan kapan. Satu
+    baris = satu kejadian, ditulis di transaksi yang sama dengan perubahannya; tidak
+    pernah di-update atau dihapus. Sengaja tanpa FK ke ``users``: user yang dihapus
+    tetap harus terbaca di riwayat.
+    """
+    __tablename__ = "qc_assignment_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ticket_id = Column(String(100), nullable=False, index=True)
+    # assign | reassign | unassign
+    action = Column(String(16), nullable=False)
+    # QC pemegang SESUDAH kejadian (NULL untuk unassign).
+    qc_username = Column(String(100), index=True)
+    # QC pemegang SEBELUM kejadian (NULL untuk assign pertama).
+    previous_qc_username = Column(String(100))
+    actor_username = Column(String(100))
+    # manual | auto | scheduler | lepas | lepas_semua | user_deleted
+    source = Column(String(20), nullable=False)
+    created_at = Column(DateTime, server_default=func.now(), index=True)
+
+
 class QcStatusEvent(Base):
     """Jejak audit APPEND-ONLY setiap perubahan Manual Status (vonis human).
 

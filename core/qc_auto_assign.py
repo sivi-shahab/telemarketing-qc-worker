@@ -155,7 +155,9 @@ def run_scheduled_batch(db) -> dict:
         return {"assigned": 0, "skipped": "no_unassigned_tickets"}
     pairs = distribute_evenly(pool, qc_users)
     try:
-        created = crud.bulk_assign_tickets_to_qc(db, pairs, assigned_by_username=SCHEDULER_USERNAME)
+        created = crud.bulk_assign_tickets_to_qc(
+            db, pairs, assigned_by_username=SCHEDULER_USERNAME, source="scheduler",
+        )
     except IntegrityError:
         # ``ticket_id`` unik: orang lain (tombol manual, atau beat kedua yang mengarah
         # ke DB yang sama) meng-assign salah satunya di sela pembacaan dan penulisan.
