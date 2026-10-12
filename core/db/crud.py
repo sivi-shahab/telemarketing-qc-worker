@@ -26,6 +26,7 @@ from db.models import (
     ErrorCodeAppeal,
     OcrImage,
     QcAssignment,
+    QcAssignmentEvent,
     QcDatabase,
     QcManualCheck,
     QcStatusEvent,
@@ -2599,32 +2600,79 @@ def tl_review_error_code_appeal(
 # QC ticket assignments (Team Leader QC assigns a ticket to a QC; 1 ticket -> 1 QC)
 # ---------------------------------------------------------------------------
 
+def record_assignment_event(
+    db: Session, ticket_id: str, action: str, *, qc_username: str = None,
+    previous_qc_username: str = None, actor_username: str = None,
+    source: str, at: datetime = None,
+) -> None:
+    """Tambahkan satu baris ``qc_assignment_events`` TANPA commit — pemanggilnya
+    meng-commit bersama perubahan ``qc_assignments``-nya, jadi state dan jejaknya
+    tidak bisa berbeda. ``created_at`` UTC naive, sama dengan ``assigned_at``."""
+    db.add(QcAssignmentEvent(
+        ticket_id=ticket_id, action=action, qc_username=qc_username,
+        previous_qc_username=previous_qc_username, actor_username=actor_username,
+        source=source, created_at=at or datetime.utcnow(),
+    ))
+
+
 def assign_ticket_to_qc(
     db: Session, ticket_id: str, qc_username: str, assigned_by_username: str = None
 ) -> QcAssignment:
-    """Assign ``ticket_id`` to ``qc_username`` (upsert — reassigns if it exists)."""
+    """Assign ``ticket_id`` to ``qc_username`` (upsert — reassigns if it exists).
+
+    Dicatat di ``qc_assignment_events`` sebagai ``assign`` / ``reassign``; assign
+    ulang ke QC yang SAMA tidak mengubah pemegang, jadi tidak dicatat."""
     tid = (ticket_id or "").strip()
+    username = (qc_username or "").strip()
+    now = datetime.utcnow()
     row = db.query(QcAssignment).filter(QcAssignment.ticket_id == tid).first()
+    previous = row.qc_username if row is not None else None
     if row is None:
         row = QcAssignment(ticket_id=tid)
         db.add(row)
-    row.qc_username = (qc_username or "").strip()
+    row.qc_username = username
     row.assigned_by_username = assigned_by_username
-    row.assigned_at = datetime.utcnow()
+    row.assigned_at = now
+    if previous != username:
+        record_assignment_event(
+            db, tid, "reassign" if previous else "assign", qc_username=username,
+            previous_qc_username=previous, actor_username=assigned_by_username,
+            source="manual", at=now,
+        )
     db.commit()
     db.refresh(row)
     return row
 
 
-def unassign_ticket(db: Session, ticket_id: str) -> bool:
+def unassign_ticket(db: Session, ticket_id: str, actor_username: str = None) -> bool:
     """Remove any QC assignment for ``ticket_id``. Returns True if one was removed."""
     tid = (ticket_id or "").strip()
     row = db.query(QcAssignment).filter(QcAssignment.ticket_id == tid).first()
     if row is None:
         return False
+    record_assignment_event(
+        db, tid, "unassign", previous_qc_username=row.qc_username,
+        actor_username=actor_username, source="lepas",
+    )
     db.delete(row)
     db.commit()
     return True
+
+
+def unassign_tickets_of_qc(
+    db: Session, qc_username: str, actor_username: str = None, source: str = "user_deleted"
+) -> int:
+    """Hapus seluruh assignment milik ``qc_username`` + catat event-nya, TANPA commit
+    (dipakai penghapusan user, yang meng-commit semuanya sekaligus)."""
+    rows = db.query(QcAssignment).filter(QcAssignment.qc_username == qc_username).all()
+    now = datetime.utcnow()
+    for r in rows:
+        record_assignment_event(
+            db, r.ticket_id, "unassign", previous_qc_username=r.qc_username,
+            actor_username=actor_username, source=source, at=now,
+        )
+        db.delete(r)
+    return len(rows)
 
 
 def list_qc_assignments(db: Session) -> list[QcAssignment]:
@@ -2632,7 +2680,9 @@ def list_qc_assignments(db: Session) -> list[QcAssignment]:
     return db.query(QcAssignment).order_by(QcAssignment.assigned_at.desc()).all()
 
 
-def bulk_unassign_tickets(db: Session, ticket_ids: Optional[list] = None) -> int:
+def bulk_unassign_tickets(
+    db: Session, ticket_ids: Optional[list] = None, actor_username: str = None
+) -> int:
     """Lepas assignment QC sekaligus. ``ticket_ids=None`` melepas SEMUA baris;
     sebuah daftar membatasi ke ticket id itu saja (dipakai tombol "Lepas Semua" di
     menu Assign Ticket, dibatasi ke cakupan pemanggil oleh pemanggilnya).
@@ -2647,13 +2697,21 @@ def bulk_unassign_tickets(db: Session, ticket_ids: Optional[list] = None) -> int
         if not ids:
             return 0
         q = q.filter(QcAssignment.ticket_id.in_(list(ids)))
-    n = q.delete(synchronize_session=False)
+    # Dibaca dulu supaya pemegang sebelumnya bisa dicatat per tiket.
+    rows = q.all()
+    now = datetime.utcnow()
+    for r in rows:
+        record_assignment_event(
+            db, r.ticket_id, "unassign", previous_qc_username=r.qc_username,
+            actor_username=actor_username, source="lepas_semua", at=now,
+        )
+        db.delete(r)
     db.commit()
-    return n
+    return len(rows)
 
 
 def bulk_assign_tickets_to_qc(
-    db: Session, pairs, assigned_by_username: str = None
+    db: Session, pairs, assigned_by_username: str = None, source: str = "auto"
 ) -> int:
     """Assign banyak tiket sekaligus dalam SATU commit. Mengembalikan jumlah baris baru.
 
@@ -2679,6 +2737,10 @@ def bulk_assign_tickets_to_qc(
             ticket_id=tid, qc_username=username,
             assigned_by_username=assigned_by_username, assigned_at=now,
         ))
+        record_assignment_event(
+            db, tid, "assign", qc_username=username,
+            actor_username=assigned_by_username, source=source, at=now,
+        )
         taken.add(tid)
         created += 1
     if created:
