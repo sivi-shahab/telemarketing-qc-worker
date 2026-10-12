@@ -24,9 +24,9 @@ from typing import Optional
 
 from sqlalchemy.exc import IntegrityError
 
-from compliance.campaign_kind import collection_campaigns_from_env
+from compliance.campaign_kind import collection_campaigns_from_env, is_collection
 from db import crud
-from db.models import User
+from db.models import Role, RoleCampaign, User, UserCampaign
 
 # Jam batch (WIB, 24 jam): 08.00, 11.00, 13.00, 15.00, 16.30.
 SCHEDULE_WIB = [(8, 0), (11, 0), (13, 0), (15, 0), (16, 30)]
@@ -58,15 +58,56 @@ def next_run(now: Optional[datetime] = None) -> datetime:
     raise RuntimeError("SCHEDULE_WIB kosong")  # pragma: no cover
 
 
-def active_qc_usernames(db) -> list:
-    """Username QC aktif, urut nama — populasi penerima auto assign."""
+def collection_only(campaigns, collection) -> bool:
+    """True bila ``campaigns`` (cakupan role/orang) berisi HANYA campaign Collection.
+
+    List kosong = tidak dibatasi, jadi bukan Collection-only. Grup ``Telemarketing``
+    bukan nama Collection, jadi ikut membatalkan.
+    """
+    names = [c for c in campaigns or [] if str(c or "").strip()]
+    return bool(names) and all(is_collection(c, collection) for c in names)
+
+
+def active_qc_users(db) -> list:
+    """User QC aktif yang menerima tiket Assign Ticket, urut nama.
+
+    QC yang cakupannya HANYA Collection (``user_campaigns`` atau ``role_campaigns``
+    role-nya) dikecualikan (12 Oktober 2026): Collection tidak mengenal Assign
+    Ticket, dan antreannya memang hanya berisi tiket non-Collection. Sebelumnya
+    QC Collection ikut di dropdown dan kebagian tiket Telemarketing.
+    """
     rows = (
         db.query(User)
         .filter(User.role == "qc", User.is_active == True)  # noqa: E712
         .order_by(User.name, User.username)
         .all()
     )
-    return [(u.username or "").strip() for u in rows if (u.username or "").strip()]
+    collection = collection_campaigns_from_env()
+    if not collection or not rows:
+        return rows
+    role_campaigns = [
+        r[0] for r in db.query(RoleCampaign.campaign)
+        .join(Role, Role.id == RoleCampaign.role_id)
+        .filter(Role.key == "qc")
+        .all()
+    ]
+    if collection_only(role_campaigns, collection):
+        return []
+    per_user: dict = {}
+    for uid, campaign in (
+        db.query(UserCampaign.user_id, UserCampaign.campaign)
+        .filter(UserCampaign.user_id.in_([u.id for u in rows]))
+        .all()
+    ):
+        per_user.setdefault(uid, []).append(campaign)
+    return [u for u in rows if not collection_only(per_user.get(u.id), collection)]
+
+
+def active_qc_usernames(db) -> list:
+    """Username QC aktif (lihat :func:`active_qc_users`) — populasi penerima auto assign."""
+    return [
+        (u.username or "").strip() for u in active_qc_users(db) if (u.username or "").strip()
+    ]
 
 
 def ticket_id_for_result(result) -> Optional[str]:
