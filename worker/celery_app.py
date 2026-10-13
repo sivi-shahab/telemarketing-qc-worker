@@ -4,7 +4,7 @@ from datetime import timedelta
 from celery import Celery
 from celery.schedules import crontab
 
-from qc_auto_assign import SCHEDULE_WIB
+from qc_auto_assign import interval_minutes
 from services import data_dwh
 
 # Evaluasi selalu memakai data DWH segar (reproses dilakukan justru karena data TMS
@@ -85,15 +85,16 @@ celery_app.conf.update(
             "task": "worker.tasks.maintenance.refresh_stats_snapshot",
             "schedule": 120.0,
         },
-        # Batch auto assign tiket ke QC (jam WIB; timezone di atas = Asia/Jakarta),
-        # 6 Oktober 2026. Saklarnya QC_AUTO_ASSIGN_ENABLED (default mati) dibaca task-nya
-        # sendiri, jadi entri ini aman ada walau fiturnya belum dinyalakan.
-        **{
-            f"auto-assign-{h:02d}{m:02d}": {
-                "task": "worker.tasks.auto_assign.scheduled_auto_assign",
-                "schedule": crontab(hour=h, minute=m),
-            }
-            for h, m in SCHEDULE_WIB
+        # Putaran auto assign tiket ke QC tiap QC_AUTO_ASSIGN_INTERVAL_MIN menit
+        # (bawaan 5; 13 Oktober 2026, menggantikan lima slot tetap 08.00…16.30).
+        # Saklarnya QC_AUTO_ASSIGN_ENABLED (default mati) dibaca task-nya sendiri,
+        # jadi entri ini aman ada walau fiturnya belum dinyalakan.
+        "auto-assign": {
+            "task": "worker.tasks.auto_assign.scheduled_auto_assign",
+            "schedule": crontab(minute=f"*/{interval_minutes()}"),
+            # Putaran yang telat tidak menumpuk — putaran berikutnya membaca antrean
+            # yang sama.
+            "options": {"expires": 4 * 60},
         },
     },
 )

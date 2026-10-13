@@ -4,8 +4,14 @@ Dipakai dua pintu masuk dengan aturan pembagian yang sama persis:
 
 * tombol **Assign Otomatis** di menu Assign Ticket (``api/routers/qc_assignment.py``,
   dalam cakupan pemanggil), dan
-* **jadwal batch** otomatis (``worker/tasks/auto_assign.py``, Celery beat) pada jam
-  ``SCHEDULE_WIB`` — tanpa pemanggil, jadi cakupannya SELURUH tiket.
+* **jadwal batch** otomatis (``worker/tasks/auto_assign.py``, Celery beat) tiap
+  ``interval_minutes()`` menit — tanpa pemanggil, jadi cakupannya SELURUH tiket.
+
+Sejak 13 Oktober 2026 batch terjadwal membaca App C ``/tickets-daily`` (H-0 dan H-1),
+bukan ``results``: tiket baru di-assign begitu SEMUA rekamannya selesai diproses App C
+(status ``done`` di menu Assign Ticket); yang belum, dicoba lagi di putaran berikutnya.
+Pembagiannya rata HARIAN (lihat :func:`distribute_daily`), karena tiap putaran hanya
+membawa beberapa tiket. Tombol manual tetap memakai :func:`distribute_evenly`.
 
 Diport dari 4-service@e17ecca (5 Oktober 2026). Bedanya dengan versi itu:
 
@@ -20,7 +26,7 @@ Modul ini sengaja tidak mengimpor FastAPI supaya bisa dipakai worker.
 import logging
 import os
 import random
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from sqlalchemy.exc import IntegrityError
@@ -32,8 +38,13 @@ from services import tickets_daily
 
 logger = logging.getLogger(__name__)
 
-# Jam batch (WIB, 24 jam): 08.00, 11.00, 13.00, 15.00, 16.30.
-SCHEDULE_WIB = [(8, 0), (11, 0), (13, 0), (15, 0), (16, 30)]
+# Jarak antar-putaran batch terjadwal (menit), env ``QC_AUTO_ASSIGN_INTERVAL_MIN``.
+# Menggantikan lima slot tetap 08.00…16.30 (13 Oktober 2026).
+DEFAULT_INTERVAL_MIN = 5
+
+# load_date App C yang dibaca batch: hari ini (WIB) dan kemarin. Tunggakan lebih lama
+# sengaja tidak disapu — itu pekerjaan tombol manual per tanggal.
+POOL_DAYS = 2
 
 # WIB = UTC+7 tetap (tanpa DST).
 _WIB = timezone(timedelta(hours=7))
@@ -46,20 +57,27 @@ def schedule_enabled() -> bool:
     return os.getenv("QC_AUTO_ASSIGN_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
 
 
+def interval_minutes() -> int:
+    """Menit antar-putaran (env ``QC_AUTO_ASSIGN_INTERVAL_MIN``); nilai rusak = bawaan."""
+    try:
+        n = int(os.getenv("QC_AUTO_ASSIGN_INTERVAL_MIN", "").strip())
+    except ValueError:
+        return DEFAULT_INTERVAL_MIN
+    return n if n > 0 else DEFAULT_INTERVAL_MIN
+
+
 def schedule_labels() -> list:
-    return [f"{h:02d}:{m:02d}" for h, m in SCHEDULE_WIB]
+    return [f"tiap {interval_minutes()} menit"]
 
 
 def next_run(now: Optional[datetime] = None) -> datetime:
-    """Waktu batch berikutnya (aware, WIB) setelah ``now`` (default: sekarang)."""
+    """Putaran berikutnya (aware, WIB) setelah ``now``: kelipatan interval sejak 00.00
+    WIB — sama dengan ``crontab(minute="*/n")`` di beat."""
     now_wib = (now or datetime.now(timezone.utc)).astimezone(_WIB)
-    for day_offset in (0, 1):
-        day = (now_wib + timedelta(days=day_offset)).date()
-        for h, m in SCHEDULE_WIB:
-            slot = datetime(day.year, day.month, day.day, h, m, tzinfo=_WIB)
-            if slot > now_wib:
-                return slot
-    raise RuntimeError("SCHEDULE_WIB kosong")  # pragma: no cover
+    step = interval_minutes()
+    midnight = now_wib.replace(hour=0, minute=0, second=0, microsecond=0)
+    elapsed = int((now_wib - midnight).total_seconds() // 60)
+    return midnight + timedelta(minutes=(elapsed // step + 1) * step)
 
 
 def collection_only(campaigns, collection) -> bool:
@@ -233,18 +251,138 @@ def distribute_evenly(pool, qc_users, rnd=None, campaign_of=None) -> list:
     return pairs
 
 
-def run_scheduled_batch(db) -> dict:
-    """Satu batch terjadwal, seluruh tiket (tanpa cakupan). Slot tanpa pekerjaan di-skip.
+def _collection_contexts() -> frozenset:
+    """Context App C milik campaign Collection, dari ``CAMPAIGN_CONTEXT_MAP``
+    (bawaan ``Collection:collection``, sama dengan ``api.campaign_context``)."""
+    collection = collection_campaigns_from_env()
+    out = set()
+    for chunk in os.getenv("CAMPAIGN_CONTEXT_MAP", "Telemarketing:*,Collection:collection").split(","):
+        name, sep, contexts = chunk.partition(":")
+        if sep and is_collection(name.strip(), collection):
+            out |= {c.strip().casefold() for c in contexts.split("|") if c.strip()}
+    out.discard("*")
+    return frozenset(out)
+
+
+def ready_pool(items, assigned_ids):
+    """``(pool, campaign_of, waiting)`` dari baris App C ``/tickets-daily``.
+
+    Satu ticket id bisa membawa beberapa rekaman (``tiket_id``); tiket SIAP bila semua
+    rekamannya punya ``processed_at`` — aturan yang sama dengan kolom Status menu
+    Assign Ticket (``groupStatus`` di dashboard). ``waiting`` = tiket tanpa QC yang
+    belum siap; tidak ada antrean retry tersendiri, putaran berikutnya membacanya lagi.
+    Tiket yang sudah punya QC dan tiket Collection (nama campaign atau context)
+    dilewati.
+    """
+    collection = collection_campaigns_from_env()
+    contexts = _collection_contexts()
+    groups: dict = {}
+    for it in items or []:
+        tid = str(it.get("id") or it.get("tiket_id") or "").strip()
+        if not tid:
+            continue
+        groups.setdefault(tid, []).append(it)
+    pool, campaign_of, waiting = [], {}, 0
+    for tid, rows in groups.items():
+        if tid in assigned_ids:
+            continue
+        if any(
+            is_collection(str(r.get("campaign") or "").strip(), collection)
+            or str(r.get("context") or "").strip().casefold() in contexts
+            for r in rows
+        ):
+            continue
+        if not all(r.get("processed_at") is not None for r in rows):
+            waiting += 1
+            continue
+        pool.append(tid)
+        campaign = next((str(r.get("campaign")).strip() for r in rows if r.get("campaign")), "")
+        if campaign:
+            campaign_of[tid] = campaign
+    return pool, campaign_of, waiting
+
+
+def daily_loads(assignments, since, campaign_of):
+    """Beban QC hari ini: ``(total, per_campaign)`` dari assignment dengan
+    ``assigned_at >= since`` (naive UTC, seperti kolomnya). ``per_campaign`` dikunci
+    ``(campaign, qc)``; tiket yang campaign-nya tidak diketahui masuk kelompok ``""``."""
+    total: dict = {}
+    per_campaign: dict = {}
+    for a in assignments or []:
+        if a.assigned_at is None or a.assigned_at < since:
+            continue
+        qc = (a.qc_username or "").strip()
+        if not qc:
+            continue
+        key = (campaign_of.get((a.ticket_id or "").strip(), ""), qc)
+        total[qc] = total.get(qc, 0) + 1
+        per_campaign[key] = per_campaign.get(key, 0) + 1
+    return total, per_campaign
+
+
+def distribute_daily(pool, qc_users, campaign_of, total_load, campaign_load, rnd=None) -> list:
+    """Bagi ``pool`` ke ``qc_users`` dengan memperhitungkan beban HARI INI.
+
+    Tiap tiket jatuh ke QC dengan beban paling kecil di campaign tiket itu, lalu total
+    hari ini, lalu urutan acak. Putaran 5 menit hanya membawa 1–2 tiket; tanpa beban
+    harian, "rata per batch" berarti tiap tiket jatuh ke QC acak dan selisihnya
+    menumpuk sepanjang hari. QC yang baru aktif siang hari kebagian lebih dulu sampai
+    bebannya menyusul. Dict beban yang diberikan TIDAK diubah.
+    """
+    if not pool or not qc_users:
+        return []
+    rnd = rnd or random.Random()
+    total = dict(total_load or {})
+    per_campaign = dict(campaign_load or {})
+    qcs = list(qc_users)
+    rnd.shuffle(qcs)
+    order = {q: i for i, q in enumerate(qcs)}
+    tickets = sorted(pool)
+    rnd.shuffle(tickets)
+    pairs = []
+    for tid in tickets:
+        c = campaign_of.get(tid, "")
+        q = min(qcs, key=lambda u: (per_campaign.get((c, u), 0), total.get(u, 0), order[u]))
+        pairs.append((tid, q))
+        per_campaign[(c, q)] = per_campaign.get((c, q), 0) + 1
+        total[q] = total.get(q, 0) + 1
+    return pairs
+
+
+def run_scheduled_batch(db, now: Optional[datetime] = None) -> dict:
+    """Satu putaran terjadwal: tiket App C H-0/H-1 yang sudah done dan belum punya QC.
 
     Mengembalikan ringkasan dengan ``skipped`` berisi alasan bila tidak ada yang dibagi.
+    ``waiting`` = tiket yang belum done (dicoba lagi putaran berikutnya).
     """
     qc_users = active_qc_usernames(db)
     if not qc_users:
         return {"assigned": 0, "skipped": "no_active_qc"}
-    _ids, pool = unassigned_pool(db)
+    now_wib = (now or datetime.now(timezone.utc)).astimezone(_WIB)
+    today: date = now_wib.date()
+    items = []
+    try:
+        for d in range(POOL_DAYS):
+            items += tickets_daily.fetch_all(load_date=(today - timedelta(days=d)).isoformat())["items"]
+    except tickets_daily.TicketsDailyError as exc:
+        logger.warning("[auto-assign] App C tidak terbaca, putaran dilewati: %s", exc)
+        return {"assigned": 0, "skipped": "app_c_error"}
+    assignments = crud.list_qc_assignments(db)
+    assigned_ids = {(a.ticket_id or "").strip() for a in assignments}
+    pool, campaign_of, waiting = ready_pool(items, assigned_ids)
     if not pool:
-        return {"assigned": 0, "skipped": "no_unassigned_tickets"}
-    pairs = distribute_evenly(pool, qc_users, campaign_of=campaign_map(db, pool))
+        return {"assigned": 0, "skipped": "no_ready_tickets", "waiting": waiting}
+    midnight_wib = datetime(today.year, today.month, today.day, tzinfo=_WIB)
+    since = midnight_wib.astimezone(timezone.utc).replace(tzinfo=None)
+    # Campaign SEMUA baris App C yang dibaca, bukan hanya pool: tiket hari ini yang
+    # sudah punya QC harus terhitung di campaign-nya sendiri.
+    campaign_all = {}
+    for it in items:
+        tid = str(it.get("id") or it.get("tiket_id") or "").strip()
+        if tid and it.get("campaign") and tid not in campaign_all:
+            campaign_all[tid] = str(it.get("campaign")).strip()
+    total, per_campaign = daily_loads(assignments, since, {**campaign_all, **campaign_of})
+    pairs = distribute_daily(pool, qc_users, campaign_of, total, per_campaign)
     try:
         created = crud.bulk_assign_tickets_to_qc(
             db, pairs, assigned_by_username=SCHEDULER_USERNAME, source="scheduler",
@@ -252,10 +390,11 @@ def run_scheduled_batch(db) -> dict:
     except IntegrityError:
         # ``ticket_id`` unik: orang lain (tombol manual, atau beat kedua yang mengarah
         # ke DB yang sama) meng-assign salah satunya di sela pembacaan dan penulisan.
-        # Batch ini dibatalkan utuh; sisa antrean ikut batch berikutnya.
+        # Putaran ini dibatalkan utuh; sisanya ikut putaran berikutnya.
         db.rollback()
         return {"assigned": 0, "skipped": "conflict"}
     per_qc: dict = {}
     for _tid, owner in pairs:
         per_qc[owner] = per_qc.get(owner, 0) + 1
-    return {"assigned": created, "pool": len(pool), "qc_count": len(qc_users), "per_qc": per_qc}
+    return {"assigned": created, "pool": len(pool), "waiting": waiting,
+            "qc_count": len(qc_users), "per_qc": per_qc}
