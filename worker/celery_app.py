@@ -85,8 +85,9 @@ celery_app.conf.update(
             "task": "worker.tasks.maintenance.refresh_stats_snapshot",
             "schedule": 120.0,
         },
-        # Putaran auto assign tiket ke QC tiap QC_AUTO_ASSIGN_INTERVAL_MIN menit
-        # (bawaan 5; 13 Oktober 2026, menggantikan lima slot tetap 08.00…16.30).
+        # Cek auto assign tiap QC_AUTO_ASSIGN_INTERVAL_MIN menit (bawaan 5). Pembagian
+        # tetap per slot SCHEDULE_WIB (08.00…16.30): di tiap cek, data baru slot aktif
+        # baru dibagi bila semuanya sudah done di App C (qc_auto_assign.slot_pool).
         # Saklarnya QC_AUTO_ASSIGN_ENABLED (default mati) dibaca task-nya sendiri,
         # jadi entri ini aman ada walau fiturnya belum dinyalakan.
         "auto-assign": {

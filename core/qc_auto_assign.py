@@ -4,14 +4,15 @@ Dipakai dua pintu masuk dengan aturan pembagian yang sama persis:
 
 * tombol **Assign Otomatis** di menu Assign Ticket (``api/routers/qc_assignment.py``,
   dalam cakupan pemanggil), dan
-* **jadwal batch** otomatis (``worker/tasks/auto_assign.py``, Celery beat) tiap
-  ``interval_minutes()`` menit — tanpa pemanggil, jadi cakupannya SELURUH tiket.
+* **jadwal batch** otomatis (``worker/tasks/auto_assign.py``, Celery beat) pada jam
+  ``SCHEDULE_WIB`` — tanpa pemanggil, jadi cakupannya SELURUH tiket.
 
 Sejak 13 Oktober 2026 batch terjadwal membaca App C ``/tickets-daily`` (H-0 dan H-1),
-bukan ``results``: tiket baru di-assign begitu SEMUA rekamannya selesai diproses App C
-(status ``done`` di menu Assign Ticket); yang belum, dicoba lagi di putaran berikutnya.
-Pembagiannya rata HARIAN (lihat :func:`distribute_daily`), karena tiap putaran hanya
-membawa beberapa tiket. Tombol manual tetap memakai :func:`distribute_evenly`.
+bukan ``results``, dan memakai GERBANG STATUS (lihat :func:`slot_pool`): pada tiap slot,
+data baru (masuk sejak slot sebelumnya) baru dibagi bila SEMUANYA sudah done di App C.
+Selama belum, beat mengecek ulang tiap ``interval_minutes()`` menit sampai slot
+berikutnya. Pembagiannya rata HARIAN (:func:`distribute_daily`). Tombol manual tetap
+memakai :func:`distribute_evenly`.
 
 Diport dari 4-service@e17ecca (5 Oktober 2026). Bedanya dengan versi itu:
 
@@ -38,8 +39,11 @@ from services import tickets_daily
 
 logger = logging.getLogger(__name__)
 
-# Jarak antar-putaran batch terjadwal (menit), env ``QC_AUTO_ASSIGN_INTERVAL_MIN``.
-# Menggantikan lima slot tetap 08.00…16.30 (13 Oktober 2026).
+# Jam batch (WIB, 24 jam): 08.00, 11.00, 13.00, 15.00, 16.30.
+SCHEDULE_WIB = [(8, 0), (11, 0), (13, 0), (15, 0), (16, 30)]
+
+# Jarak cek ulang status (menit) selama data baru sebuah slot belum done semua, env
+# ``QC_AUTO_ASSIGN_INTERVAL_MIN``. Beat berdetak sesering ini; pembagian tetap per slot.
 DEFAULT_INTERVAL_MIN = 5
 
 # load_date App C yang dibaca batch: hari ini (WIB) dan kemarin. Tunggakan lebih lama
@@ -58,7 +62,7 @@ def schedule_enabled() -> bool:
 
 
 def interval_minutes() -> int:
-    """Menit antar-putaran (env ``QC_AUTO_ASSIGN_INTERVAL_MIN``); nilai rusak = bawaan."""
+    """Menit antar-cek ulang status (env ``QC_AUTO_ASSIGN_INTERVAL_MIN``); nilai rusak = bawaan."""
     try:
         n = int(os.getenv("QC_AUTO_ASSIGN_INTERVAL_MIN", "").strip())
     except ValueError:
@@ -67,17 +71,31 @@ def interval_minutes() -> int:
 
 
 def schedule_labels() -> list:
-    return [f"tiap {interval_minutes()} menit"]
+    return [f"{h:02d}:{m:02d}" for h, m in SCHEDULE_WIB]
+
+
+def _slots_around(now_wib: datetime) -> list:
+    """Semua slot (aware, WIB) dari kemarin sampai besok, urut waktu."""
+    out = []
+    for day_offset in (-1, 0, 1):
+        day = (now_wib + timedelta(days=day_offset)).date()
+        for h, m in SCHEDULE_WIB:
+            out.append(datetime(day.year, day.month, day.day, h, m, tzinfo=_WIB))
+    return out
 
 
 def next_run(now: Optional[datetime] = None) -> datetime:
-    """Putaran berikutnya (aware, WIB) setelah ``now``: kelipatan interval sejak 00.00
-    WIB — sama dengan ``crontab(minute="*/n")`` di beat."""
+    """Slot berikutnya (aware, WIB) setelah ``now`` (default: sekarang)."""
     now_wib = (now or datetime.now(timezone.utc)).astimezone(_WIB)
-    step = interval_minutes()
-    midnight = now_wib.replace(hour=0, minute=0, second=0, microsecond=0)
-    elapsed = int((now_wib - midnight).total_seconds() // 60)
-    return midnight + timedelta(minutes=(elapsed // step + 1) * step)
+    return next(s for s in _slots_around(now_wib) if s > now_wib)
+
+
+def current_slot(now: Optional[datetime] = None):
+    """``(slot_aktif, slot_sebelumnya)``: slot terakhir yang ``<= now`` dan slot sebelum
+    itu (aware, WIB). Jendela cek ulang sebuah slot berlaku sampai slot berikutnya."""
+    now_wib = (now or datetime.now(timezone.utc)).astimezone(_WIB)
+    past = [s for s in _slots_around(now_wib) if s <= now_wib]
+    return past[-1], past[-2]
 
 
 def collection_only(campaigns, collection) -> bool:
@@ -264,18 +282,24 @@ def _collection_contexts() -> frozenset:
     return frozenset(out)
 
 
-def ready_pool(items, assigned_ids):
-    """``(pool, campaign_of, waiting)`` dari baris App C ``/tickets-daily``.
+def slot_pool(items, assigned_ids, slot_start, prev_start):
+    """``(pool, campaign_of, waiting)`` untuk slot ``slot_start`` dari baris App C.
 
-    Satu ticket id bisa membawa beberapa rekaman (``tiket_id``); tiket SIAP bila semua
-    rekamannya punya ``processed_at`` — aturan yang sama dengan kolom Status menu
-    Assign Ticket (``groupStatus`` di dashboard). ``waiting`` = tiket tanpa QC yang
-    belum siap; tidak ada antrean retry tersendiri, putaran berikutnya membacanya lagi.
-    Tiket yang sudah punya QC dan tiket Collection (nama campaign atau context)
-    dilewati.
+    Satu ticket id bisa membawa beberapa rekaman (``tiket_id``); tiket DONE bila semua
+    rekamannya punya ``processed_at`` — aturan kolom Status menu Assign Ticket. Waktu
+    masuk tiket = ``inserted_at`` rekaman terbarunya.
+
+    * masuk setelah ``slot_start``: belum giliran, menunggu slot berikutnya;
+    * masuk dalam ``(prev_start, slot_start]`` = DATA BARU slot ini. Yang belum done
+      dihitung di ``waiting`` — selama ``waiting > 0`` pemanggil TIDAK membagi apa pun;
+    * masuk sebelum ``prev_start`` = sisa slot lalu (pernah macet): ikut dibagi bila
+      sudah done, tetapi tidak pernah menahan slot ini.
+
+    Tiket yang sudah punya QC dan tiket Collection (nama campaign atau context) dilewati.
     """
     collection = collection_campaigns_from_env()
     contexts = _collection_contexts()
+    slot_ts, prev_ts = slot_start.timestamp(), prev_start.timestamp()
     groups: dict = {}
     for it in items or []:
         tid = str(it.get("id") or it.get("tiket_id") or "").strip()
@@ -292,8 +316,12 @@ def ready_pool(items, assigned_ids):
             for r in rows
         ):
             continue
+        inserted = max(float(r.get("inserted_at") or 0) for r in rows)
+        if inserted > slot_ts:
+            continue
         if not all(r.get("processed_at") is not None for r in rows):
-            waiting += 1
+            if inserted > prev_ts:
+                waiting += 1
             continue
         pool.append(tid)
         campaign = next((str(r.get("campaign")).strip() for r in rows if r.get("campaign")), "")
@@ -350,16 +378,20 @@ def distribute_daily(pool, qc_users, campaign_of, total_load, campaign_load, rnd
 
 
 def run_scheduled_batch(db, now: Optional[datetime] = None) -> dict:
-    """Satu putaran terjadwal: tiket App C H-0/H-1 yang sudah done dan belum punya QC.
+    """Satu cek terjadwal (tiap ``interval_minutes()`` menit) untuk slot yang aktif.
 
-    Mengembalikan ringkasan dengan ``skipped`` berisi alasan bila tidak ada yang dibagi.
-    ``waiting`` = tiket yang belum done (dicoba lagi putaran berikutnya).
+    Data baru slot itu dibagi hanya bila SEMUANYA sudah done (:func:`slot_pool`);
+    selama belum, hasilnya ``skipped="waiting_not_done"`` dan cek berikutnya mencoba
+    lagi. Setelah dibagi, cek-cek sesudahnya dalam slot yang sama tidak menemukan apa
+    pun lagi kecuali sisa lama yang baru done. ``slot`` = jam slot aktif (WIB).
     """
     qc_users = active_qc_usernames(db)
     if not qc_users:
         return {"assigned": 0, "skipped": "no_active_qc"}
     now_wib = (now or datetime.now(timezone.utc)).astimezone(_WIB)
     today: date = now_wib.date()
+    slot_start, prev_start = current_slot(now_wib)
+    slot_label = slot_start.strftime("%H:%M")
     items = []
     try:
         for d in range(POOL_DAYS):
@@ -369,9 +401,11 @@ def run_scheduled_batch(db, now: Optional[datetime] = None) -> dict:
         return {"assigned": 0, "skipped": "app_c_error"}
     assignments = crud.list_qc_assignments(db)
     assigned_ids = {(a.ticket_id or "").strip() for a in assignments}
-    pool, campaign_of, waiting = ready_pool(items, assigned_ids)
+    pool, campaign_of, waiting = slot_pool(items, assigned_ids, slot_start, prev_start)
+    if waiting:
+        return {"assigned": 0, "skipped": "waiting_not_done", "waiting": waiting, "slot": slot_label}
     if not pool:
-        return {"assigned": 0, "skipped": "no_ready_tickets", "waiting": waiting}
+        return {"assigned": 0, "skipped": "no_ready_tickets", "slot": slot_label}
     midnight_wib = datetime(today.year, today.month, today.day, tzinfo=_WIB)
     since = midnight_wib.astimezone(timezone.utc).replace(tzinfo=None)
     # Campaign SEMUA baris App C yang dibaca, bukan hanya pool: tiket hari ini yang
@@ -396,5 +430,5 @@ def run_scheduled_batch(db, now: Optional[datetime] = None) -> dict:
     per_qc: dict = {}
     for _tid, owner in pairs:
         per_qc[owner] = per_qc.get(owner, 0) + 1
-    return {"assigned": created, "pool": len(pool), "waiting": waiting,
+    return {"assigned": created, "pool": len(pool), "slot": slot_label,
             "qc_count": len(qc_users), "per_qc": per_qc}
