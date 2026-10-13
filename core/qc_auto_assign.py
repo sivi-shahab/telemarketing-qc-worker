@@ -17,6 +17,7 @@ Diport dari 4-service@e17ecca (5 Oktober 2026). Bedanya dengan versi itu:
 
 Modul ini sengaja tidak mengimpor FastAPI supaya bisa dipakai worker.
 """
+import logging
 import os
 import random
 from datetime import datetime, timedelta, timezone
@@ -27,6 +28,9 @@ from sqlalchemy.exc import IntegrityError
 from compliance.campaign_kind import collection_campaigns_from_env, is_collection
 from db import crud
 from db.models import Role, RoleCampaign, User, UserCampaign
+from services import tickets_daily
+
+logger = logging.getLogger(__name__)
 
 # Jam batch (WIB, 24 jam): 08.00, 11.00, 13.00, 15.00, 16.30.
 SCHEDULE_WIB = [(8, 0), (11, 0), (13, 0), (15, 0), (16, 30)]
@@ -155,31 +159,77 @@ def unassigned_pool(db, campaigns=None, customer_ids=None):
     return ticket_ids, [t for t in ticket_ids if t not in assigned_ids]
 
 
-def distribute_evenly(pool, qc_users, rnd=None) -> list:
+def campaign_map(db, ticket_ids, load_date=None) -> dict:
+    """``{ticket_id: campaign}`` untuk pembagian rata per campaign.
+
+    Campaign yang dimaksud adalah yang dilihat orang di menu Assign Ticket: field
+    ``campaign`` App C ``/tickets-daily`` (``Personal Loan``, ``CashLine NTB``, ...).
+    ``Result.campaign`` tidak bisa dipakai sendirian — untuk seluruh tiket
+    Telemarketing isinya sama, ``Cashline``, jadi pembagian "per campaign" di atasnya
+    tidak membagi apa pun.
+
+    App C ditanya untuk ``load_date`` (kosong = H-1) — tanggal yang sama dengan yang
+    dimuat layar Assign Ticket, jadi permintaannya kena cache ``tickets_daily``.
+    Tiket di luar tanggal itu (mis. sisa antrean lama yang dibagi batch terjadwal),
+    atau saat App C tidak bisa dihubungi, jatuh ke ``Result.campaign`` — pembagian
+    tetap jalan, hanya kelompoknya lebih kasar.
+    """
+    wanted = {(t or "").strip() for t in ticket_ids or [] if (t or "").strip()}
+    out = {t: c for t, c in crud.campaign_by_ticket_ids(db, wanted).items() if t in wanted}
+    try:
+        items = tickets_daily.fetch_all(load_date=(load_date or "").strip() or None)["items"]
+    except Exception as exc:  # noqa: BLE001 — App C mati tidak boleh memblokir assign
+        logger.warning("[auto-assign] campaign App C tidak terbaca, pakai Result.campaign: %s", exc)
+        return out
+    for it in items:
+        tid = str(it.get("id") or it.get("tiket_id") or "").strip()
+        campaign = str(it.get("campaign") or "").strip()
+        if tid in wanted and campaign:
+            out[tid] = campaign
+    return out
+
+
+def distribute_evenly(pool, qc_users, rnd=None, campaign_of=None) -> list:
     """Bagi ``pool`` acak & merata ke ``qc_users``: ``[(ticket_id, qc_username), ...]``.
 
     Merata per MOMEN pembagian (2 Oktober 2026, mengganti aturan "merata atas total
     beban" 4 September): beban dimulai dari 0 untuk semua QC aktif saat ini, jadi
     8 QC aktif -> 8 QC kebagian, 7 QC aktif -> 7 QC kebagian. Beban lama TIDAK
     dihitung — QC yang baru aktif tidak diborong tiket sampai "menyusul" total QC
-    lain. Selisih antar-QC paling banyak 1 tiket.
+    lain.
 
-    Urutan antrean DIKOCOK dan seri diundi, supaya tidak ada QC yang selalu kebagian
-    tiket tertua/termuda dan nama pertama secara alfabetis tidak selalu unggul.
-    ``rnd`` bisa diisi ``random.Random(seed)`` agar hasilnya bisa diuji.
+    Merata PER CAMPAIGN (13 Oktober 2026): ``campaign_of`` = ``{ticket_id: campaign}``.
+    Tiket dikelompokkan per campaign lalu dibagi bergiliran ke QC dengan putaran yang
+    BERSAMBUNG antar-campaign. Hasilnya selisih antar-QC paling banyak 1 tiket di
+    SETIAP campaign sekaligus di total — sebelumnya hanya total yang rata, komposisi
+    campaign tiap QC mengikuti untung-untungan acak. Tanpa ``campaign_of`` (atau
+    tiket yang campaign-nya tidak diketahui) semuanya dianggap satu kelompok.
+
+    Urutan QC, urutan campaign, dan urutan tiket di tiap campaign DIKOCOK, supaya
+    tidak ada QC yang selalu kebagian sisa, tiket tertua/termuda, atau nama pertama
+    secara alfabetis. ``rnd`` bisa diisi ``random.Random(seed)`` agar hasilnya bisa
+    diuji.
     """
     if not pool or not qc_users:
         return []
     rnd = rnd or random.Random()
-    load = {u: 0 for u in qc_users}
-    pool = list(pool)
-    rnd.shuffle(pool)
-    pairs = []
+    campaign_of = campaign_of or {}
+    groups: dict = {}
     for tid in pool:
-        low = min(load.values())
-        owner = rnd.choice([u for u, n in load.items() if n == low])
-        load[owner] += 1
-        pairs.append((tid, owner))
+        groups.setdefault(campaign_of.get(tid) or "", []).append(tid)
+    # Urutkan dulu baru kocok: urutan dict mengikuti antrean, dan hasil untuk seed
+    # yang sama harus sama walaupun antreannya datang dalam urutan lain.
+    campaigns = sorted(groups)
+    rnd.shuffle(campaigns)
+    qcs = list(qc_users)
+    rnd.shuffle(qcs)
+    pairs, i = [], 0
+    for campaign in campaigns:
+        tickets = groups[campaign]
+        rnd.shuffle(tickets)
+        for tid in tickets:
+            pairs.append((tid, qcs[i % len(qcs)]))
+            i += 1
     return pairs
 
 
@@ -194,7 +244,7 @@ def run_scheduled_batch(db) -> dict:
     _ids, pool = unassigned_pool(db)
     if not pool:
         return {"assigned": 0, "skipped": "no_unassigned_tickets"}
-    pairs = distribute_evenly(pool, qc_users)
+    pairs = distribute_evenly(pool, qc_users, campaign_of=campaign_map(db, pool))
     try:
         created = crud.bulk_assign_tickets_to_qc(
             db, pairs, assigned_by_username=SCHEDULER_USERNAME, source="scheduler",

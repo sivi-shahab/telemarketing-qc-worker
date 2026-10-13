@@ -1593,6 +1593,27 @@ def results_count_by_ticket_ids(db: Session, ticket_ids) -> int:
     return sum(_results_by_ticket_ids_q(db, chunk).count() for chunk in _ticket_id_chunks(ticket_ids))
 
 
+def campaign_by_ticket_ids(db: Session, ticket_ids) -> dict:
+    """``{ticket_id: campaign}`` untuk pembagian Assign Ticket per campaign.
+
+    Tiket dua-agent bisa punya beberapa baris Result; yang dipakai campaign terkecil
+    secara abjad supaya hasilnya tetap sama di setiap pemanggilan. Tiket tanpa baris
+    Result (atau campaign kosong) tidak muncul di hasil.
+    """
+    out: dict = {}
+    tid_col = func.split_part(Result.source_files[0].astext, "_", 1)
+    for chunk in _ticket_id_chunks(ticket_ids):
+        rows = (
+            db.query(tid_col, Result.campaign)
+            .filter(tid_col.in_(chunk), Result.campaign.isnot(None), Result.campaign != "")
+            .all()
+        )
+        for tid, campaign in rows:
+            if tid not in out or campaign < out[tid]:
+                out[tid] = campaign
+    return out
+
+
 def delete_results_by_ticket_ids(db: Session, ticket_ids) -> int:
     """Versi jamak dari :func:`delete_results_by_ticket_id` — tombol Delete All.
 
