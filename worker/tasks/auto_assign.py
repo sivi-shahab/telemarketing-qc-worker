@@ -1,6 +1,6 @@
-"""Celery task: batch auto assign tiket ke QC pada jam terjadwal.
+"""Celery task: batch auto assign tiket ke QC tiap beberapa menit.
 
-Dijadwalkan Celery beat (``worker/celery_app.py``) pada ``qc_auto_assign.SCHEDULE_WIB``.
+Dijadwalkan Celery beat (``worker/celery_app.py``) tiap ``qc_auto_assign.interval_minutes()`` menit.
 Diport dari 4-service@e17ecca (5 Oktober 2026). Saklarnya ``QC_AUTO_ASSIGN_ENABLED``
 (default MATI): beat tetap memanggil task ini di tiap slot, tetapi task langsung
 pulang tanpa menyentuh DB selama saklarnya mati. Slot yang antreannya sudah habis

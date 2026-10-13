@@ -6,12 +6,18 @@ Tanpa DB/Redis.
 TASK = "worker.tasks.auto_assign.scheduled_auto_assign"
 
 
-def test_beat_menjadwalkan_lima_slot_wib():
+def test_beat_menjadwalkan_satu_putaran_tiap_5_menit():
+    """13 Oktober 2026: lima slot tetap diganti satu entri tiap 5 menit."""
     from worker.celery_app import celery_app
 
     entries = [e for e in celery_app.conf.beat_schedule.values() if e["task"] == TASK]
-    slots = sorted((min(e["schedule"].hour), min(e["schedule"].minute)) for e in entries)
-    assert slots == [(8, 0), (11, 0), (13, 0), (15, 0), (16, 30)]
+    assert len(entries) == 1
+    sched = entries[0]["schedule"]
+    assert sorted(sched.minute) == list(range(0, 60, 5))
+    assert sched.hour == set(range(24))
+    # Putaran yang telat (worker sibuk/mati) tidak menumpuk: putaran berikutnya
+    # sudah membaca antrean yang sama.
+    assert entries[0]["options"]["expires"] < 5 * 60
     assert celery_app.conf.timezone == "Asia/Jakarta"
     assert "worker.tasks.auto_assign" in celery_app.conf.include
 
