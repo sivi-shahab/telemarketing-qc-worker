@@ -374,7 +374,14 @@ def run_scheduled_batch(db, now: Optional[datetime] = None) -> dict:
         return {"assigned": 0, "skipped": "no_ready_tickets", "waiting": waiting}
     midnight_wib = datetime(today.year, today.month, today.day, tzinfo=_WIB)
     since = midnight_wib.astimezone(timezone.utc).replace(tzinfo=None)
-    total, per_campaign = daily_loads(assignments, since, campaign_of)
+    # Campaign SEMUA baris App C yang dibaca, bukan hanya pool: tiket hari ini yang
+    # sudah punya QC harus terhitung di campaign-nya sendiri.
+    campaign_all = {}
+    for it in items:
+        tid = str(it.get("id") or it.get("tiket_id") or "").strip()
+        if tid and it.get("campaign") and tid not in campaign_all:
+            campaign_all[tid] = str(it.get("campaign")).strip()
+    total, per_campaign = daily_loads(assignments, since, {**campaign_all, **campaign_of})
     pairs = distribute_daily(pool, qc_users, campaign_of, total, per_campaign)
     try:
         created = crud.bulk_assign_tickets_to_qc(
