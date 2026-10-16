@@ -93,12 +93,20 @@ def get_result_by_source_file(db: Session, filename: str) -> Optional[Result]:
     )
 
 
-def pick_reusable_done_result(db: Session, customer_id: str) -> Optional[Result]:
+def pick_reusable_done_result(
+    db: Session, customer_id: str, source_files=None,
+) -> Optional[Result]:
     """Pilih Result ``done`` untuk ``customer_id`` (prefix sebelum ``_`` pada
     file pertama) yang boleh di-reuse saat upload duplikat.
 
     Prioritas: Result yang punya minimal 1 banding (``ErrorCodeAppeal``, status
     apapun); jika tidak ada, Result dengan ``uploaded_at`` terbaru.
+
+    ``source_files`` (nama file upload baru): hanya Result yang SUDAH menilai semua
+    file itu yang boleh di-clone. 16 Oktober 2026 — sebelumnya cukup ID-nya sama,
+    sehingga recording yang datang belakangan untuk ID yang sama (JOB-3 mengupload
+    ulang grup berisi PDF baru) ikut di-clone dari evaluasi recording pertama dan
+    tidak pernah dinilai (37 ID sejak 1 Oktober). ``None`` = perilaku lama.
     """
     candidates = (
         db.query(Result)
@@ -109,6 +117,9 @@ def pick_reusable_done_result(db: Session, customer_id: str) -> Optional[Result]
         .order_by(desc(Result.uploaded_at))
         .all()
     )
+    if source_files is not None:
+        wanted = {str(f) for f in source_files}
+        candidates = [r for r in candidates if wanted <= {str(f) for f in (r.source_files or [])}]
     if not candidates:
         return None
     # candidates sudah urut uploaded_at desc -> kandidat pertama yang punya
