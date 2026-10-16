@@ -85,6 +85,13 @@ celery_app.conf.update(
             "task": "worker.tasks.maintenance.refresh_stats_snapshot",
             "schedule": 120.0,
         },
+        # Nonaktif QC dari Kelola QC (Team Leader QC) berlaku sampai 00.00 WIB; cek
+        # tiap 2 menit supaya QC aktif kembali paling lambat 00.02 WIB, jauh sebelum
+        # slot auto assign pertama (16 Oktober 2026).
+        "reactivate-expired-qc-users": {
+            "task": "worker.tasks.maintenance.reactivate_expired_qc_users",
+            "schedule": 120.0,
+        },
         # Cek auto assign tiap QC_AUTO_ASSIGN_INTERVAL_MIN menit (bawaan 5). Pembagian
         # tetap per slot SCHEDULE_WIB (08.00…16.30): di tiap cek, data baru slot aktif
         # baru dibagi bila semuanya sudah done di App C (qc_auto_assign.slot_pool).

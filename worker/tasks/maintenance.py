@@ -4,6 +4,9 @@
 karena worker-nya mati di tengah jalan — lihat ``crud.STALE_PROCESSING_AFTER``.
 ``fail_stale_ocr_images`` melakukan hal serupa untuk gambar menu OCR Gambar yang
 menggantung ``pending``/``processing`` — lihat ``crud.fail_stale_ocr_images``.
+``reactivate_expired_qc_users`` mengaktifkan kembali QC yang dinonaktifkan Team
+Leader QC (Kelola QC) begitu lewat 00.00 WIB — lihat
+``crud.reactivate_expired_qc_users``.
 """
 import logging
 
@@ -67,3 +70,17 @@ def refresh_stats_snapshot():
         crud.get_or_build_stats_snapshot(db)
     finally:
         db.close()
+
+
+@celery_app.task(name="worker.tasks.maintenance.reactivate_expired_qc_users",
+                 ignore_result=True)
+def reactivate_expired_qc_users():
+    db = _session_factory()()
+    try:
+        usernames = crud.reactivate_expired_qc_users(db)
+    finally:
+        db.close()
+    if usernames:
+        logger.info("%d QC aktif kembali (nonaktif Kelola QC lewat 00.00 WIB): %s",
+                    len(usernames), ", ".join(usernames))
+    return {"reactivated": len(usernames)}
