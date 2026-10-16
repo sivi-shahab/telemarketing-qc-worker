@@ -93,12 +93,20 @@ def get_result_by_source_file(db: Session, filename: str) -> Optional[Result]:
     )
 
 
-def pick_reusable_done_result(db: Session, customer_id: str) -> Optional[Result]:
+def pick_reusable_done_result(
+    db: Session, customer_id: str, source_files=None,
+) -> Optional[Result]:
     """Pilih Result ``done`` untuk ``customer_id`` (prefix sebelum ``_`` pada
     file pertama) yang boleh di-reuse saat upload duplikat.
 
     Prioritas: Result yang punya minimal 1 banding (``ErrorCodeAppeal``, status
     apapun); jika tidak ada, Result dengan ``uploaded_at`` terbaru.
+
+    ``source_files`` (nama file upload baru): hanya Result yang SUDAH menilai semua
+    file itu yang boleh di-clone. 16 Oktober 2026 — sebelumnya cukup ID-nya sama,
+    sehingga recording yang datang belakangan untuk ID yang sama (JOB-3 mengupload
+    ulang grup berisi PDF baru) ikut di-clone dari evaluasi recording pertama dan
+    tidak pernah dinilai (37 ID sejak 1 Oktober). ``None`` = perilaku lama.
     """
     candidates = (
         db.query(Result)
@@ -109,6 +117,9 @@ def pick_reusable_done_result(db: Session, customer_id: str) -> Optional[Result]
         .order_by(desc(Result.uploaded_at))
         .all()
     )
+    if source_files is not None:
+        wanted = {str(f) for f in source_files}
+        candidates = [r for r in candidates if wanted <= {str(f) for f in (r.source_files or [])}]
     if not candidates:
         return None
     # candidates sudah urut uploaded_at desc -> kandidat pertama yang punya
@@ -871,6 +882,27 @@ def list_results_by_date_range(
 # Stats
 # ---------------------------------------------------------------------------
 
+def status_per_ticket(rows) -> dict:
+    """``{ticket_id: status}`` dari baris ``(ticket_id, status, uploaded_at)``.
+
+    Statistics menghitung per TICKET ID, bukan per baris Result (16 Oktober 2026):
+    sejak 13 Oktober JOB-3 mengupload ulang tiket yang sama beberapa kali sehari,
+    sehingga satu ID bisa punya 8 baris (clone ``reuse``) — 12-16 Oktober tercatat
+    1.148 baris untuk 211 ID. Status satu ID = ``done`` bila salah satu barisnya
+    ``done`` (aturan yang sama dengan ``stats_aggregate.one_result_per_ticket``),
+    selain itu status baris terbarunya.
+    """
+    best: dict = {}
+    for tid, status, uploaded_at in rows:
+        tid = (tid or "").strip()
+        if not tid:
+            continue
+        key = (status == "done", uploaded_at or datetime.min)
+        if tid not in best or key > best[tid][0]:
+            best[tid] = (key, status)
+    return {tid: status for tid, (_k, status) in best.items()}
+
+
 def get_stats(
     db: Session,
     customer_ids: Optional[list[str]] = None,
@@ -900,12 +932,12 @@ def get_stats(
         q = exclude_collection_campaigns(q)
         return q.filter(prefix.in_(customer_ids)) if customer_ids is not None else q
 
-    counts = (
-        _scoped(db.query(Result.status, func.count(Result.id)))
-        .group_by(Result.status)
-        .all()
-    )
-    status_map = {row[0]: row[1] for row in counts}
+    # Per ticket id, bukan per baris Result — lihat ``status_per_ticket``.
+    status_map: dict = {}
+    for st in status_per_ticket(
+        _scoped(db.query(prefix, Result.status, Result.uploaded_at)).all()
+    ).values():
+        status_map[st] = status_map.get(st, 0) + 1
     total = sum(status_map.values())
     avg_row = (
         _scoped(db.query(func.avg(Result.processing_sec)))
@@ -1287,7 +1319,13 @@ def _stats_signature(db: Session) -> str:
     #        30 September 2026 sebelumnya terbaca 0 agent, path file-nya sama;
     #      * backfill agent_id/submit_time ke 176 snapshot reference_data — ditulis
     #        di tempat, jumlah & created_at result_data tidak berubah.
-    version = "v27"
+    # v28: Statistics dihitung per TICKET ID, bukan per baris Result (16 Oktober
+    #      2026) — upload ulang JOB-3 membuat satu ID punya banyak baris. Satu ID =
+    #      satu baris wakil (``stats_aggregate.one_result_per_ticket``); data tidak
+    #      berubah, jadi snapshot lama HARUS gugur.
+    # v29: baris wakil per ID mengabaikan evaluasi usang (file-nya tercakup penuh
+    #      oleh baris done lain) — pasangan fix reuse recording baru, 16 Okt 2026.
+    version = "v29"
     sla = "1" if get_doc_sla_enabled(db) else "0"
     # Sidik jari daftar tersembunyi. WAJIB ikut: tanpa ini snapshot yang sudah
     # ter-cache akan terus menyajikan angka tiket yang baru disembunyikan sampai ada

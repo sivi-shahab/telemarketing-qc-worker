@@ -976,6 +976,51 @@ def ai_status_map(db, results) -> dict:
     }
 
 
+def one_result_per_ticket(db, results) -> list:
+    """Satu baris Result per TICKET ID — Statistics menghitung ID, bukan baris.
+
+    16 Oktober 2026: sejak 13 Oktober JOB-3 mengupload ulang tiket yang sama
+    beberapa kali sehari, dan tiap upload jadi baris Result baru (clone ``reuse``),
+    sehingga 12-16 Oktober tercatat 1.148 baris untuk 211 ID. Per ID dipilih satu
+    baris wakil:
+
+    - ada baris ``done`` dengan AI Status Not Qualified (FAIL) -> yang terbaru di
+      antaranya ("Return bila salah satu recording Return", keputusan bisnis);
+    - selain itu baris ``done`` terbaru; tidak ada yang ``done`` -> baris terbaru;
+    - baris ``done`` yang file-nya tercakup penuh oleh baris ``done`` lain (recording
+      baru sudah dinilai ulang di baris itu) diabaikan sebagai evaluasi usang.
+
+    Urutan ``results`` dipertahankan. Baris tanpa ticket id tetap berdiri sendiri.
+    Status per ID untuk hitungan SQL memakai aturan yang sama:
+    ``crud.status_per_ticket``.
+    """
+    rows = list(results or [])
+    groups: dict = defaultdict(list)
+    for r in rows:
+        groups[(_customer_id(r.source_files) or "").strip() or f"#{r.id}"].append(r)
+    if len(groups) == len(rows):
+        return rows
+    multi_done = [r for g in groups.values() if len(g) > 1 for r in g if r.status == "done"]
+    ai = ai_status_map(db, multi_done) if multi_done else {}
+
+    def _newest(cands):
+        return max(cands, key=lambda r: r.uploaded_at or datetime.min)
+
+    keep = set()
+    for g in groups.values():
+        if len(g) == 1:
+            keep.add(g[0].id)
+            continue
+        done = [r for r in g if r.status == "done"]
+        # Baris yang file-nya tercakup PENUH oleh baris done lain (recording baru
+        # sudah ikut dinilai di sana) adalah evaluasi usang — tidak ikut memvonis.
+        sets = {r.id: set(r.source_files or []) for r in done}
+        done = [r for r in done if not any(sets[r.id] < sets[o.id] for o in done)]
+        fail = [r for r in done if ai.get(str(r.id)) == "FAIL"]
+        keep.add(_newest(fail or done or g).id)
+    return [r for r in rows if r.id in keep]
+
+
 def manual_status_of(qc_request) -> "str | None":
     """Manual Status = vonis HUMAN untuk sebuah tiket: 'PASS' | 'FAIL' | 'PENDING',
     atau None bila belum ada vonis yang final.
@@ -1201,7 +1246,9 @@ def compute_scoped_overview(db, customer_ids) -> dict:
         return _empty_overview()
 
     prefix = func.split_part(Result.source_files[0].astext, "_", 1)
-    results = exclude_hidden_results(db.query(Result).filter(prefix.in_(ids))).all()
+    results = one_result_per_ticket(
+        db, exclude_hidden_results(db.query(Result).filter(prefix.in_(ids))).all()
+    )
 
     counts = {"pending": 0, "processing": 0, "done": 0, "failed": 0}
     for r in results:
@@ -1331,7 +1378,7 @@ def compute_failure_reasons(db, campaign: str = None, campaigns: list = None,
     "AI Status — per waktu" — kontrol yang sama juga dipasang di tab Failure Rate,
     lihat ``compute_stats_snapshot``. Tanggal tiap tiket memakai aturan "chart date"
     yang sama: TMS ``submit_time``, jatuh balik ke tanggal transkrip."""
-    done_results = done_results_query(db, campaign, campaigns).all()
+    done_results = one_result_per_ticket(db, done_results_query(db, campaign, campaigns).all())
     if date_start is not None or date_end is not None:
         chart_dates = _submit_date_map(db, done_results)
 
@@ -1683,7 +1730,7 @@ def compute_failure_reasons_hierarchy(db, campaign: str = None, campaigns: list 
     kategori (lihat ``_fail_node``), jadi teks requirement hanya boleh dipakai
     pemanggil server-side (PPT Error Rate), tidak ikut ke respons/snapshot.
     """
-    done_results = done_results_query(db, campaign, campaigns).all()
+    done_results = one_result_per_ticket(db, done_results_query(db, campaign, campaigns).all())
     if date_start is not None or date_end is not None:
         chart_dates = _submit_date_map(db, done_results)
 
@@ -1916,7 +1963,7 @@ def _iter_export_tickets(db, campaign: str = None, campaigns: list = None):
     Evaluasinya sudah menerapkan banding yang di-approve (``_adjusted_evaluation``),
     sama seperti tampilan dashboard.
     """
-    done_results = done_results_query(db, campaign, campaigns).all()
+    done_results = one_result_per_ticket(db, done_results_query(db, campaign, campaigns).all())
     result_ids = [r.id for r in done_results]
     eval_by_id: dict = {}
     if result_ids:
@@ -2284,7 +2331,7 @@ def compute_nama_ibu_kandung_rows(db, campaigns: list = None) -> list:
     ``campaigns`` = batas campaign role (``None`` = tanpa batas), lihat
     ``done_results_query``.
     """
-    done_results = done_results_query(db, campaigns=campaigns).all()
+    done_results = one_result_per_ticket(db, done_results_query(db, campaigns=campaigns).all())
     result_ids = [r.id for r in done_results]
     eval_by_id: dict = {}
     if result_ids:
@@ -2607,6 +2654,7 @@ def compute_ai_status_timeseries(db, customer_ids, campaign, granularity, start,
     if campaign:
         want = str(campaign).strip().lower()
         results = [r for r in results if str(r.campaign or "").strip().lower() == want]
+    results = one_result_per_ticket(db, results)
 
     # Chart x-axis date = ``submit_time`` (disbursement submission date); fall
     # back to the transcript date (generated_at, else uploaded_at) only when a ticket
@@ -2790,9 +2838,9 @@ def compute_team_agents(db, agent_ids) -> list:
     per_agent = defaultdict(lambda: dict(_zero_agent))
     if cid_to_agent:
         prefix = func.split_part(Result.source_files[0].astext, "_", 1)
-        results = exclude_hidden_results(
+        results = one_result_per_ticket(db, exclude_hidden_results(
             db.query(Result).filter(prefix.in_(list(cid_to_agent.keys())))
-        ).all()
+        ).all())
         done_ids, result_agent = [], {}
         for r in results:
             sf = r.source_files or []
@@ -3097,9 +3145,9 @@ def compute_qc_performance(db) -> list:
     all_tickets = [a.ticket_id for a in assignments]
     if all_tickets:
         prefix = func.split_part(Result.source_files[0].astext, "_", 1)
-        results = exclude_hidden_results(
+        results = one_result_per_ticket(db, exclude_hidden_results(
             db.query(Result).filter(prefix.in_(all_tickets))
-        ).all()
+        ).all())
         ticket_of, done_ids = {}, []
         for r in results:
             sf = r.source_files or []
@@ -3236,7 +3284,9 @@ def compute_stats_snapshot(db, customer_ids=None, roster_uids=None,
         # _customer_id() di bawah dan compute_scoped_overview().
         prefix = func.split_part(Result.source_files[0].astext, "_", 1)
         done_results = q.filter(prefix.in_(ids)).all() if ids else []
+    done_results = one_result_per_ticket(db, done_results)
 
+    if customer_ids is not None:
         # crud.get_stats() menghitung SELURUH organisasi. Dalam mode scoped angka
         # itu akan bocor ke KPI card, jadi status count dihitung ulang dari tiket
         # dalam scope saja (semua status, bukan cuma done). active_campaigns tetap
@@ -3244,9 +3294,12 @@ def compute_stats_snapshot(db, customer_ids=None, roster_uids=None,
         # Lewat ``exclude_hidden_results`` sama seperti ``done_results`` di atas:
         # tanpa itu tiket tersembunyi dan tiket Collection ikut terhitung di KPI card
         # sementara tabel di bawahnya tidak memuatnya.
+        # Per ticket id, sama dengan ``crud.get_stats`` — lihat ``status_per_ticket``.
         statuses = (
-            [s for (s,) in exclude_hidden_results(db.query(Result.status))
-             .filter(prefix.in_(ids)).all()]
+            list(crud.status_per_ticket(
+                exclude_hidden_results(db.query(prefix, Result.status, Result.uploaded_at))
+                .filter(prefix.in_(ids)).all()
+            ).values())
             if ids else []
         )
         counts = {"pending": 0, "processing": 0, "done": 0, "failed": 0}
@@ -3378,16 +3431,17 @@ def compute_stats_snapshot(db, customer_ids=None, roster_uids=None,
     camp_status_counts: dict = defaultdict(
         lambda: {"pending": 0, "processing": 0, "done": 0, "failed": 0}
     )
-    for camp, st, cnt in (
-        exclude_hidden_results(
-            db.query(Result.campaign, Result.status, func.count(Result.id))
-        )
-        .group_by(Result.campaign, Result.status)
-        .all()
-    ):
-        c = (camp or "").strip() or _UNKNOWN
-        if st in camp_status_counts[c]:
-            camp_status_counts[c][st] += cnt
+    # Per ticket id per campaign, sama dengan ``crud.get_stats``.
+    _tid = func.split_part(Result.source_files[0].astext, "_", 1)
+    rows_by_camp: dict = defaultdict(list)
+    for camp, tid, st, up in exclude_hidden_results(
+        db.query(Result.campaign, _tid, Result.status, Result.uploaded_at)
+    ).all():
+        rows_by_camp[(camp or "").strip() or _UNKNOWN].append((tid, st, up))
+    for c, rows in rows_by_camp.items():
+        for st in crud.status_per_ticket(rows).values():
+            if st in camp_status_counts[c]:
+                camp_status_counts[c][st] += 1
 
     for r in done_results:
         cid = _customer_id(r.source_files)
