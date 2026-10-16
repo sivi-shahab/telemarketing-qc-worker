@@ -986,7 +986,9 @@ def one_result_per_ticket(db, results) -> list:
 
     - ada baris ``done`` dengan AI Status Not Qualified (FAIL) -> yang terbaru di
       antaranya ("Return bila salah satu recording Return", keputusan bisnis);
-    - selain itu baris ``done`` terbaru; tidak ada yang ``done`` -> baris terbaru.
+    - selain itu baris ``done`` terbaru; tidak ada yang ``done`` -> baris terbaru;
+    - baris ``done`` yang file-nya tercakup penuh oleh baris ``done`` lain (recording
+      baru sudah dinilai ulang di baris itu) diabaikan sebagai evaluasi usang.
 
     Urutan ``results`` dipertahankan. Baris tanpa ticket id tetap berdiri sendiri.
     Status per ID untuk hitungan SQL memakai aturan yang sama:
@@ -1010,6 +1012,10 @@ def one_result_per_ticket(db, results) -> list:
             keep.add(g[0].id)
             continue
         done = [r for r in g if r.status == "done"]
+        # Baris yang file-nya tercakup PENUH oleh baris done lain (recording baru
+        # sudah ikut dinilai di sana) adalah evaluasi usang — tidak ikut memvonis.
+        sets = {r.id: set(r.source_files or []) for r in done}
+        done = [r for r in done if not any(sets[r.id] < sets[o.id] for o in done)]
         fail = [r for r in done if ai.get(str(r.id)) == "FAIL"]
         keep.add(_newest(fail or done or g).id)
     return [r for r in rows if r.id in keep]

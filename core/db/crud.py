@@ -1323,7 +1323,9 @@ def _stats_signature(db: Session) -> str:
     #      2026) — upload ulang JOB-3 membuat satu ID punya banyak baris. Satu ID =
     #      satu baris wakil (``stats_aggregate.one_result_per_ticket``); data tidak
     #      berubah, jadi snapshot lama HARUS gugur.
-    version = "v28"
+    # v29: baris wakil per ID mengabaikan evaluasi usang (file-nya tercakup penuh
+    #      oleh baris done lain) — pasangan fix reuse recording baru, 16 Okt 2026.
+    version = "v29"
     sla = "1" if get_doc_sla_enabled(db) else "0"
     # Sidik jari daftar tersembunyi. WAJIB ikut: tanpa ini snapshot yang sudah
     # ter-cache akan terus menyajikan angka tiket yang baru disembunyikan sampai ada
