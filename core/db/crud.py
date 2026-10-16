@@ -300,6 +300,43 @@ def fail_stale_ocr_images(db: Session, now: datetime = None) -> int:
     return result.rowcount
 
 
+# WIB = UTC+7 tetap (tanpa DST).
+_WIB_OFFSET = timedelta(hours=7)
+
+
+def next_midnight_wib_utc(now: datetime = None) -> datetime:
+    """00.00 WIB berikutnya sesudah ``now`` (UTC naive), dikembalikan UTC naive.
+
+    Batas nonaktif QC oleh Team Leader QC (Kelola QC): tepat 00.00 WIB sudah
+    dihitung hari berikutnya, jadi hasilnya selalu sesudah ``now``.
+    """
+    if now is None:
+        now = datetime.utcnow()
+    wib = now + _WIB_OFFSET
+    midnight = datetime(wib.year, wib.month, wib.day) + timedelta(days=1)
+    return midnight - _WIB_OFFSET
+
+
+def reactivate_expired_qc_users(db: Session, now: datetime = None) -> list:
+    """Aktifkan kembali user yang batas nonaktif sementaranya (``inactive_until``)
+    sudah lewat; kembalikan username-nya. Satu UPDATE, idempoten — dipanggil beat
+    worker tiap 2 menit dan saat login (16 Oktober 2026).
+    """
+    if now is None:
+        now = datetime.utcnow()
+    result = db.execute(
+        update(User)
+        .where(User.is_active.is_(False), User.inactive_until.isnot(None),
+               User.inactive_until <= now)
+        .values(is_active=True, inactive_until=None)
+        .returning(User.username)
+        .execution_options(synchronize_session=False)
+    )
+    usernames = sorted(r[0] for r in result)
+    db.commit()
+    return usernames
+
+
 def _result_json_key(row_id) -> str:
     return f"rj:v1:{row_id}"
 

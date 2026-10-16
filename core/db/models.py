@@ -20,6 +20,11 @@ class User(Base):
     # the same string, so keeping it textual means they stay readable together.
     role = Column(String(50), nullable=False, default="sales_agent")
     is_active = Column(Boolean, default=True)
+    # Batas nonaktif sementara (UTC naive). Diisi saat Team Leader QC menonaktifkan
+    # QC lewat Kelola QC: 00.00 WIB berikutnya — lewat dari itu
+    # ``crud.reactivate_expired_qc_users`` mengaktifkannya kembali. NULL = nonaktif
+    # permanen (oleh Admin) atau user aktif (16 Oktober 2026).
+    inactive_until = Column(DateTime, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
     created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
 
