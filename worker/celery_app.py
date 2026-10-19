@@ -32,6 +32,7 @@ celery_app = Celery(
         "worker.tasks.reprocess_ticket",
         "worker.tasks.maintenance",
         "worker.tasks.auto_assign",
+        "worker.tasks.reference_retry",
     ],
 )
 
@@ -103,6 +104,14 @@ celery_app.conf.update(
             # Putaran yang telat tidak menumpuk — putaran berikutnya membaca antrean
             # yang sama.
             "options": {"expires": 4 * 60},
+        },
+        # Retry data acuan TMS/Ascend (19 Oktober 2026): tiket PENDING "Data TMS/Ascend
+        # Kosong" dicek ulang ke DWH tiap 30 menit (xx.00 & xx.30 WIB) sampai 7 hari,
+        # lalu direproses begitu datanya lengkap — lihat tasks/reference_retry.py.
+        "retry-reference-gaps": {
+            "task": "worker.tasks.reference_retry.retry_reference_gaps",
+            "schedule": crontab(minute="*/30"),
+            "options": {"expires": 25 * 60},
         },
     },
 )
