@@ -27,6 +27,12 @@ Agustus 2026). Alasannya, error code hasil evaluasi baru bisa berbeda total dari
 yang dibandingkan dulu. Ini perilaku yang sama dengan mode "⟳ Proses ulang (LLM)"
 di menu Upload Transcript.
 
+PENGECUALIAN (19 Oktober 2026): job dari retry data acuan
+(``crud.REFERENCE_RETRY_USERNAME``) membawa Manual Status, riwayatnya, cek manual,
+dan dokumen row lama ke row baru (``crud.carry_over_qc_work``). Tiket seperti itu
+belum pernah dinilai LLM, jadi tidak ada error code lama yang bisa berbeda — yang
+ada hanya pekerjaan QC yang tidak boleh hilang.
+
 Berkas transkrip & JSON hasil milik row lama TIDAK dihapus dari MinIO, sama seperti
 tombol Delete tiket yang sudah ada (``/delete_ticket``) — yang dihapus hanya
 row-nya di database.
@@ -40,6 +46,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from db import crud
+from db.crud import REFERENCE_RETRY_USERNAME
 from worker.celery_app import celery_app
 from worker.config import get_worker_settings
 
@@ -177,6 +184,14 @@ def reprocess_ticket(item_id: int):
             crud.delete_results_by_ids(db, [new_result_id])
             logger.warning("reprocess item %s di-kill; row baru %s dibuang", item_id, new_result_id)
             return {"item_id": item_id, "status": "killed"}
+
+        # Retry data acuan (19 Oktober 2026): pekerjaan QC row lama dibawa ke row baru
+        # SEBELUM row lama dihapus, supaya hasilnya gabungan penilaian AI baru +
+        # pekerjaan QC lama. Tombol Reprocess manual tetap bersih (keputusan 20 Agustus).
+        if getattr(job, "created_by_username", None) == REFERENCE_RETRY_USERNAME:
+            carried = crud.carry_over_qc_work(db, item.old_result_ids, new_result_id)
+            logger.info("reprocess item %s (retry data acuan): pekerjaan QC dibawa %s",
+                        item_id, carried)
 
         # Row lama dibuang HANYA setelah row barunya jadi. Yang dihapus persis id
         # yang dibekukan saat job dibuat — upload yang masuk di tengah job tidak

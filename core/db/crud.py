@@ -3901,6 +3901,68 @@ def finish_reprocess_job_if_complete(db: Session, job_id: str) -> Optional[Repro
     return job
 
 
+# Pembuat job reproses retry data acuan (``worker.tasks.reference_retry``). Job dari
+# pembuat ini MEMBAWA pekerjaan QC ke row barunya (``carry_over_qc_work``); tombol
+# Reprocess manual tetap menghasilkan row bersih.
+REFERENCE_RETRY_USERNAME = "system:retry-data-acuan"
+
+
+def carry_over_qc_work(db: Session, old_result_ids, new_result_id) -> dict:
+    """Pindahkan pekerjaan QC dari row lama sebuah tiket ke row barunya, SEBELUM row
+    lama dihapus (yang tanpa ini ikut terhapus lewat ON DELETE CASCADE).
+
+    Dipakai reproses retry data acuan (19 Oktober 2026, tiket 130309XxVf: pengajuan
+    Manual Status PASS ikut hilang saat tiketnya akhirnya dinilai). Hasil akhirnya
+    gabungan: penilaian AI yang BARU + pekerjaan QC yang LAMA.
+
+    * ``qc_status_requests``: satu per result (unik), jadi yang dibawa hanya yang
+      TERBARU (``requested_at``); bila row baru sudah punya, tidak ada yang dibawa.
+    * ``qc_status_events``, ``qc_manual_checks``, ``documents``: semua dibawa, kecuali
+      salinan kembar — duplikat JOB-3 menyalin baris yang sama ke tiap row, dan tanpa
+      saringan riwayatnya akan berlipat.
+    * ``error_code_appeals`` TIDAK dibawa: banding menunjuk error code evaluasi lama,
+      yang belum tentu ada di evaluasi baru.
+
+    Satu commit. Mengembalikan jumlah baris yang dipindah per tabel.
+    """
+    old = [uuid.UUID(str(r)) for r in (old_result_ids or []) if str(r) != str(new_result_id)]
+    new = uuid.UUID(str(new_result_id))
+    moved = {"status_request": 0, "status_events": 0, "manual_checks": 0, "documents": 0}
+    if not old:
+        return moved
+
+    has_request = db.query(QcStatusRequest.id).filter(QcStatusRequest.result_id == new).first()
+    if has_request is None:
+        req = (
+            db.query(QcStatusRequest)
+            .filter(QcStatusRequest.result_id.in_(old))
+            .order_by(QcStatusRequest.requested_at.desc().nullslast(), QcStatusRequest.id.desc())
+            .first()
+        )
+        if req is not None:
+            req.result_id = new
+            moved["status_request"] = 1
+            db.flush()
+
+    def _move(model, key, label):
+        seen = {key(r) for r in db.query(model).filter(model.result_id == new).all()}
+        for r in db.query(model).filter(model.result_id.in_(old)).order_by(model.id).all():
+            k = key(r)
+            if k in seen:
+                continue
+            seen.add(k)
+            r.result_id = new
+            moved[label] += 1
+
+    _move(QcStatusEvent, lambda r: (r.event, r.actor_username, r.requested_status,
+                                    r.status_before, r.status_after, r.comment, r.created_at),
+          "status_events")
+    _move(QcManualCheck, lambda r: (r.checked_by_username, r.note, r.created_at), "manual_checks")
+    _move(Document, lambda r: (r.doc_type, r.object_path or r.filename), "documents")
+    db.commit()
+    return moved
+
+
 def delete_results_by_ids(db: Session, result_ids) -> int:
     """Hapus row Result tertentu (beserta turunannya lewat ON DELETE CASCADE).
 

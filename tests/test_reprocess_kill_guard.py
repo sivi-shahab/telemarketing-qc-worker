@@ -98,3 +98,45 @@ def test_item_normal_tetap_menghapus_row_lama(run):
     assert res["status"] == "done"
     assert ["old-1"] in fake.deleted
     assert fake.item.status == "done"
+
+
+# --- Retry data acuan membawa pekerjaan QC (19 Oktober 2026) -------------------
+
+@pytest.mark.parametrize("creator, carried", [
+    ("system:retry-data-acuan", True),
+    ("admin1", False),
+])
+def test_hanya_job_retry_yang_membawa_pekerjaan_qc(monkeypatch, creator, carried):
+    """130309XxVf: pengajuan Manual Status PASS ikut terhapus saat retry mereproses
+    tiketnya. Job retry kini membawa pekerjaan QC ke row baru SEBELUM row lama
+    dihapus; tombol Reprocess manual tetap bersih."""
+    from worker.tasks import reprocess_ticket as mod
+
+    fake = FakeCrud(killed_after_eval=False)
+    order = []
+    fake.get_reprocess_job = lambda db, job_id: SimpleNamespace(
+        id=job_id, status="running", created_by_username=creator)
+    fake.carry_over_qc_work = lambda db, old, new: order.append(("carry", list(old), new)) or {}
+    real_delete = fake.delete_results_by_ids
+    fake.delete_results_by_ids = lambda db, ids: order.append(("delete", list(ids))) or real_delete(db, ids)
+    monkeypatch.setattr(mod, "crud", fake)
+    session = SimpleNamespace(commit=lambda: None, rollback=lambda: None,
+                              close=lambda: None, expire_all=lambda: None)
+    monkeypatch.setattr(mod, "_session_factory", lambda: (lambda: session))
+    monkeypatch.setattr(mod, "get_worker_settings",
+                        lambda: SimpleNamespace(minio_bucket_transcripts="b"))
+    monkeypatch.setattr(mod, "_copy_transcripts", lambda *a: 1)
+    monkeypatch.setattr(mod, "_remove_transcripts", lambda *a: None)
+    pt = types.ModuleType("worker.tasks.process_transcript")
+    pt._minio_client = lambda: object()
+    pt.process_transcript = fake.evaluate
+    monkeypatch.setitem(sys.modules, "worker.tasks.process_transcript", pt)
+
+    out = mod.reprocess_ticket.run(7)
+
+    assert out["status"] == "done"
+    if carried:
+        assert order == [("carry", ["old-1"], "new-1"), ("delete", ["old-1"])]
+    else:
+        assert order == [("delete", ["old-1"])]
+
