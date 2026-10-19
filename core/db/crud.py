@@ -1673,6 +1673,16 @@ def _results_by_ticket_ids_q(db: Session, chunk: list):
     )
 
 
+def done_results_by_ticket_ids(db: Session, ticket_ids) -> list:
+    """Semua baris Result ``done`` milik sekumpulan ticket id — bahan
+    ``stats_aggregate.ticket_qc_requests`` untuk menemukan vonis human yang
+    dijatuhkan di baris LAIN (clone JOB-3) milik tiket yang sama."""
+    out: list = []
+    for chunk in _ticket_id_chunks(ticket_ids):
+        out.extend(_results_by_ticket_ids_q(db, chunk).filter(Result.status == "done").all())
+    return out
+
+
 def results_count_by_ticket_ids(db: Session, ticket_ids) -> int:
     """Berapa baris Result yang dimiliki sekumpulan ticket id.
 
