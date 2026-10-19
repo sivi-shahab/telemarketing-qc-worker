@@ -2218,6 +2218,100 @@ def reference_snapshot_index(db: Session, cids=None) -> dict[str, dict]:
     return index
 
 
+# Retry otomatis data acuan (19 Oktober 2026) — lihat
+# ``worker.tasks.reference_retry``. Batas umurnya sengaja di sini, bukan di worker:
+# API memakainya juga untuk menulis keterangan retry di kolom AI Status.
+REFERENCE_RETRY_SETTING_KEY = "reference_retry_last_run"
+REFERENCE_RETRY_MAX_AGE = timedelta(days=7)
+
+
+def reference_gap_retry_plan(db: Session, since: datetime) -> list[dict]:
+    """Rencana reproses untuk tiket yang dinilai TANPA data acuan TMS/Ascend.
+
+    Tiket seperti itu tidak pernah dinilai LLM (gerbang data acuan di
+    ``process_transcript``): ia disimpan PENDING "Data TMS Kosong · Data Ascend
+    Kosong" dengan janji "penilaian dijalankan setelah data acuannya tersedia".
+    Fungsi ini memilih tiket yang janjinya masih terbuka:
+
+    * row TERBARU tiket itu ``done`` dan diunggah sejak ``since`` (batas 7 hari);
+    * snapshot ``reference_data`` row itu memuat ``cashline`` dan/atau ``customer``
+      bernilai null. Snapshot tanpa ``reference_data`` sama sekali (tiket lama,
+      Collection) tidak ikut — definisinya sama dengan ``reference_snapshot_index``;
+    * tidak sedang direproses (``_reprocess_item_active_clause``);
+    * tidak punya pengajuan Manual Status apa pun. Reproses membuat row bersih dan
+      menghapus row lama, jadi pengajuan yang sedang/selesai ditinjau ikut hilang —
+      keputusan manusia tidak boleh dibuang oleh jadwal otomatis.
+
+    Agent tidak terpetakan TIDAK ikut: itu bukan data yang dicari ulang ke DWH.
+
+    Bentuk tiap entri = ``reprocess_plan_for_tickets`` ditambah ``gaps``
+    (``"tms"``/``"ascend"``). Fungsi ini TANPA HTTP: apakah DWH sekarang sudah punya
+    datanya diputuskan pemanggilnya.
+    """
+    cid = func.split_part(Result.source_files[0].astext, "_", 1)
+    newest = (
+        db.query(cid.label("cid"), Result.id.label("id"), Result.status.label("status"))
+        .filter(Result.source_files.isnot(None), Result.uploaded_at >= since)
+        .distinct(cid)
+        .order_by(cid, desc(Result.uploaded_at))
+        .subquery()
+    )
+    rows = (
+        db.query(
+            newest.c.cid,
+            func.jsonb_typeof(ResultData.result_json["reference_data"]["cashline"]),
+            func.jsonb_typeof(ResultData.result_json["reference_data"]["customer"]),
+        )
+        .join(ResultData, ResultData.result_id == newest.c.id)
+        .filter(newest.c.status == "done")
+        .distinct(newest.c.id)
+        .order_by(newest.c.id, desc(ResultData.created_at))
+        .all()
+    )
+    gaps_by_tid: dict[str, tuple] = {}
+    for tid, cashline_type, customer_type in rows:
+        tid = (tid or "").strip()
+        if not tid or (cashline_type is None and customer_type is None):
+            continue
+        gaps = []
+        if cashline_type != "object":
+            gaps.append("tms")
+        if cashline_type != "object" or customer_type != "object":
+            gaps.append("ascend")
+        if gaps:
+            gaps_by_tid[tid] = tuple(gaps)
+    if not gaps_by_tid:
+        return []
+
+    busy = active_reprocess_ticket_ids(db, list(gaps_by_tid))
+    plans = [p for p in reprocess_plan_for_tickets(db, list(gaps_by_tid))
+             if p["ticket_id"] not in busy]
+    all_ids = [uuid.UUID(rid) for p in plans for rid in p["old_result_ids"]]
+    reviewed = {
+        str(rid) for (rid,) in
+        db.query(QcStatusRequest.result_id).filter(QcStatusRequest.result_id.in_(all_ids)).all()
+    } if all_ids else set()
+    out = []
+    for p in plans:
+        if reviewed.intersection(p["old_result_ids"]):
+            continue
+        out.append({**p, "gaps": gaps_by_tid[p["ticket_id"]]})
+    return out
+
+
+def get_reference_retry_last_run(db: Session) -> Optional[dict]:
+    """Ringkasan putaran retry data acuan terakhir (JSON di ``app_settings``) atau
+    None bila belum pernah jalan / isinya rusak."""
+    raw = get_app_setting(db, REFERENCE_RETRY_SETTING_KEY, "")
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def get_tms_cashline_change_flags(db: Session, result_ids: list[str]) -> dict[str, dict]:
     """Map ``cid -> {"kantor","rumah","npwp","nik": bool}`` dari kolom ``*-new``
     cashline yang TERISI (ada nilai baru = ada perubahan data), untuk gating tombol
