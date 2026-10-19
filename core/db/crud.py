@@ -1260,7 +1260,14 @@ def _stats_signature(db: Session) -> str:
 
     Captures result count + latest upload/completion time, evaluation (result_data)
     count + latest time, appeal count + latest review time (approved appeals change
-    error counts), and the active sales-database file (drives agent name / TL / AM).
+    error counts), Manual Status count + latest request/review time (an approved
+    human verdict locks the AI Status and picks the ticket's representative row),
+    and the active sales-database file (drives agent name / TL / AM).
+
+    Review time = BOTH tiers: Team Leader QC finalizes on its own and only writes
+    ``tl_qc_reviewed_at`` — with ``reviewed_at`` (SPQ Head) alone a TL QC decision
+    left the snapshot stale until unrelated data arrived (19 October 2026, ticket
+    0803425lkJ).
     When this string is unchanged, the cached snapshot is still valid — so the
     expensive full scan only re-runs when the underlying data actually changed.
     """
@@ -1270,8 +1277,13 @@ def _stats_signature(db: Session) -> str:
     rd_count, rd_max = db.query(
         func.count(ResultData.id), func.max(ResultData.created_at)
     ).one()
-    ap_count, ap_rev = db.query(
-        func.count(ErrorCodeAppeal.id), func.max(ErrorCodeAppeal.reviewed_at)
+    ap_count, ap_rev, ap_tl = db.query(
+        func.count(ErrorCodeAppeal.id), func.max(ErrorCodeAppeal.reviewed_at),
+        func.max(ErrorCodeAppeal.tl_qc_reviewed_at),
+    ).one()
+    qs_count, qs_req, qs_tl, qs_rev = db.query(
+        func.count(QcStatusRequest.id), func.max(QcStatusRequest.requested_at),
+        func.max(QcStatusRequest.tl_qc_reviewed_at), func.max(QcStatusRequest.reviewed_at),
     ).one()
     sales = get_active_sales_database(db)
     sales_key = sales.object_path if sales else ""
@@ -1362,7 +1374,10 @@ def _stats_signature(db: Session) -> str:
     #      berubah, jadi snapshot lama HARUS gugur.
     # v29: baris wakil per ID mengabaikan evaluasi usang (file-nya tercakup penuh
     #      oleh baris done lain) — pasangan fix reuse recording baru, 16 Okt 2026.
-    version = "v29"
+    # v30: baris wakil per ID mendahulukan baris ber-Manual Status final (19 Okt
+    #      2026, tiket 0803425lkJ) — vonis yang sudah ada kini memilih baris lain
+    #      tanpa ada data baru; sidik jari juga ikut Manual Status + keputusan TL QC.
+    version = "v30"
     sla = "1" if get_doc_sla_enabled(db) else "0"
     # Sidik jari daftar tersembunyi. WAJIB ikut: tanpa ini snapshot yang sudah
     # ter-cache akan terus menyajikan angka tiket yang baru disembunyikan sampai ada
@@ -1375,7 +1390,8 @@ def _stats_signature(db: Session) -> str:
     collection_key = hashlib.md5(collection.encode()).hexdigest()[:8] if collection else "0"
     return (
         f"{version}|{res_count}|{res_up}|{res_done}|{rd_count}|{rd_max}"
-        f"|{ap_count}|{ap_rev}|{sales_key}|sla{sla}|hid{hidden_key}|col{collection_key}"
+        f"|{ap_count}|{ap_rev}|{ap_tl}|qs{qs_count}|{qs_req}|{qs_tl}|{qs_rev}"
+        f"|{sales_key}|sla{sla}|hid{hidden_key}|col{collection_key}"
     )
 
 
