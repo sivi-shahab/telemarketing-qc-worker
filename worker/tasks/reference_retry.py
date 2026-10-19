@@ -10,7 +10,7 @@ Tiap ``INTERVAL_MIN`` menit (beat, lihat ``celery_app``):
 
   1. ambil tiket ber-gap TMS/Ascend yang diunggah dalam ``REFERENCE_RETRY_MAX_AGE``
      (``crud.reference_gap_retry_plan`` — tanpa yang sedang direproses / punya
-     pengajuan Manual Status);
+     vonis Manual Status yang sudah final; pengajuan pending/ditolak tidak menahan);
   2. tanyakan ulang DWH per tiket (``data_dwh.fetch_bundle_checked``; worker tidak
      membaca cache Redis, jadi jawabannya segar);
   3. bila CASHLINE dan CARD HOLDER kini KEDUANYA ada, kirim job reproses
