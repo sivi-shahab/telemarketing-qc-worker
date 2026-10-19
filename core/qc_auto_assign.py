@@ -14,6 +14,10 @@ Selama belum, beat mengecek ulang tiap ``interval_minutes()`` menit sampai slot
 berikutnya. Pembagiannya rata HARIAN (:func:`distribute_daily`). Tombol manual tetap
 memakai :func:`distribute_evenly`.
 
+Sejak 19 Oktober 2026 batch terjadwal juga MEMBAGI ULANG tiket QC yang dinonaktifkan
+hari ini (Kelola QC atau Admin) dan belum dikerjakan, di slot berikutnya sesudah QC itu
+nonaktif — lihat :func:`reassign_from_inactive`.
+
 Diport dari 4-service@e17ecca (5 Oktober 2026). Bedanya dengan versi itu:
 
 * Campaign Collection (``COLLECTION_CAMPAIGNS``) dikecualikan dari antrean, sama
@@ -399,13 +403,6 @@ def run_scheduled_batch(db, now: Optional[datetime] = None) -> dict:
     except tickets_daily.TicketsDailyError as exc:
         logger.warning("[auto-assign] App C tidak terbaca, putaran dilewati: %s", exc)
         return {"assigned": 0, "skipped": "app_c_error"}
-    assignments = crud.list_qc_assignments(db)
-    assigned_ids = {(a.ticket_id or "").strip() for a in assignments}
-    pool, campaign_of, waiting = slot_pool(items, assigned_ids, slot_start, prev_start)
-    if waiting:
-        return {"assigned": 0, "skipped": "waiting_not_done", "waiting": waiting, "slot": slot_label}
-    if not pool:
-        return {"assigned": 0, "skipped": "no_ready_tickets", "slot": slot_label}
     midnight_wib = datetime(today.year, today.month, today.day, tzinfo=_WIB)
     since = midnight_wib.astimezone(timezone.utc).replace(tzinfo=None)
     # Campaign SEMUA baris App C yang dibaca, bukan hanya pool: tiket hari ini yang
@@ -415,6 +412,20 @@ def run_scheduled_batch(db, now: Optional[datetime] = None) -> dict:
         tid = str(it.get("id") or it.get("tiket_id") or "").strip()
         if tid and it.get("campaign") and tid not in campaign_all:
             campaign_all[tid] = str(it.get("campaign")).strip()
+    assignments = crud.list_qc_assignments(db)
+    # Bagi ulang tiket QC yang dinonaktifkan hari ini SEBELUM gerbang data baru: tiket
+    # itu sudah done dan sedang menunggu dikerjakan, jadi tidak boleh ikut tertahan
+    # oleh data baru slot ini yang belum done.
+    reassigned = reassign_from_inactive(db, qc_users, slot_start, since, assignments, campaign_all)
+    extra = {"reassigned": sum(reassigned.values()), "reassigned_per_qc": reassigned} if reassigned else {}
+    if reassigned:
+        assignments = crud.list_qc_assignments(db)
+    assigned_ids = {(a.ticket_id or "").strip() for a in assignments}
+    pool, campaign_of, waiting = slot_pool(items, assigned_ids, slot_start, prev_start)
+    if waiting:
+        return {"assigned": 0, "skipped": "waiting_not_done", "waiting": waiting, "slot": slot_label, **extra}
+    if not pool:
+        return {"assigned": 0, "skipped": "no_ready_tickets", "slot": slot_label, **extra}
     total, per_campaign = daily_loads(assignments, since, {**campaign_all, **campaign_of})
     pairs = distribute_daily(pool, qc_users, campaign_of, total, per_campaign)
     try:
@@ -426,9 +437,43 @@ def run_scheduled_batch(db, now: Optional[datetime] = None) -> dict:
         # ke DB yang sama) meng-assign salah satunya di sela pembacaan dan penulisan.
         # Putaran ini dibatalkan utuh; sisanya ikut putaran berikutnya.
         db.rollback()
-        return {"assigned": 0, "skipped": "conflict"}
+        return {"assigned": 0, "skipped": "conflict", **extra}
     per_qc: dict = {}
     for _tid, owner in pairs:
         per_qc[owner] = per_qc.get(owner, 0) + 1
     return {"assigned": created, "pool": len(pool), "slot": slot_label,
-            "qc_count": len(qc_users), "per_qc": per_qc}
+            "qc_count": len(qc_users), "per_qc": per_qc, **extra}
+
+
+def reassign_from_inactive(db, qc_users, slot_start, since, assignments, campaign_all) -> dict:
+    """Bagi ulang tiket QC yang dinonaktifkan hari ini ke ``qc_users`` (QC aktif) —
+    ``{qc_baru: jumlah}``, kosong bila tidak ada.
+
+    Pemilihan tiketnya di ``crud.qc_reassign_candidates`` (assign hari ini, belum ada
+    Manual Status / cek manual, QC nonaktif sebelum ``slot_start``). Pembagiannya
+    aturan yang sama dengan tiket baru (:func:`distribute_daily`, rata harian per
+    campaign); beban harian dihitung TANPA tiket yang dipindah, jadi QC aktif
+    menerimanya seolah tiket baru. Dicatat ``reassign`` dengan source ``qc_nonaktif``.
+    """
+    slot_utc = slot_start.astimezone(timezone.utc).replace(tzinfo=None)
+    moving = crud.qc_reassign_candidates(db, since=since, slot_start=slot_utc)
+    if not moving or not qc_users:
+        return {}
+    tids = [t for t, _old in moving]
+    moving_set = set(tids)
+    campaign_of = {t: c for t, c in crud.campaign_by_ticket_ids(db, tids).items() if t in moving_set}
+    campaign_of.update({t: campaign_all[t] for t in tids if t in campaign_all})
+    staying = [a for a in assignments if (a.ticket_id or "").strip() not in moving_set]
+    total, per_campaign = daily_loads(staying, since, {**campaign_all, **campaign_of})
+    pairs = distribute_daily(tids, qc_users, campaign_of, total, per_campaign)
+    moved = crud.reassign_tickets_to_qc(
+        db, pairs, assigned_by_username=SCHEDULER_USERNAME, source="qc_nonaktif",
+    )
+    if not moved:
+        return {}
+    out: dict = {}
+    for _tid, owner in pairs:
+        out[owner] = out.get(owner, 0) + 1
+    logger.info("[auto-assign] %d tiket QC nonaktif dibagi ulang: %s (dari %s)", moved, out,
+                sorted({old for _t, old in moving}))
+    return out
