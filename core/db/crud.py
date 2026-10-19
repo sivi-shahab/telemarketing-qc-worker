@@ -339,7 +339,7 @@ def reactivate_expired_qc_users(db: Session, now: datetime = None) -> list:
         update(User)
         .where(User.is_active.is_(False), User.inactive_until.isnot(None),
                User.inactive_until <= now)
-        .values(is_active=True, inactive_until=None)
+        .values(is_active=True, inactive_until=None, deactivated_at=None)
         .returning(User.username)
         .execution_options(synchronize_session=False)
     )
@@ -2944,6 +2944,92 @@ def bulk_assign_tickets_to_qc(
     if created:
         db.commit()
     return created
+
+
+def qc_reassign_candidates(db: Session, since: datetime, slot_start: datetime) -> list:
+    """Tiket QC nonaktif yang harus dibagi ulang: ``[(ticket_id, qc_lama), ...]``.
+
+    Aturan (19 Oktober 2026), semua batas waktu UTC naive:
+
+    * QC ``role='qc'`` yang SEKARANG nonaktif dan dinonaktifkan HARI INI
+      (``since`` <= ``deactivated_at``) — dari Kelola QC maupun Admin;
+    * dinonaktifkan sebelum slot aktif (``deactivated_at`` <= ``slot_start``), jadi
+      tiketnya dibagi ulang di slot BERIKUTNYA sesudah ia nonaktif, bukan di cek
+      5 menit yang kebetulan masih dalam slot yang sama;
+    * hanya tiket yang di-assign ke QC itu HARI INI (``assigned_at`` >= ``since``).
+      Tiket hari-hari sebelumnya tetap miliknya, dan besok aturan ini tidak berlaku;
+    * hanya tiket yang BELUM dikerjakan: tidak ada baris Result tiket itu yang punya
+      pengajuan Manual Status (``qc_status_requests``) atau tanda sudah dicek manual
+      (``qc_manual_checks``).
+    """
+    names = {
+        (u or "").strip().casefold()
+        for (u,) in db.query(User.username).filter(
+            User.role == "qc", User.is_active.is_(False),
+            User.deactivated_at.isnot(None),
+            User.deactivated_at >= since, User.deactivated_at <= slot_start,
+        ).all()
+        if (u or "").strip()
+    }
+    if not names:
+        return []
+    rows = (
+        db.query(QcAssignment)
+        .filter(func.lower(func.trim(QcAssignment.qc_username)).in_(names),
+                QcAssignment.assigned_at >= since)
+        .all()
+    )
+    tids = sorted({(r.ticket_id or "").strip() for r in rows if (r.ticket_id or "").strip()})
+    if not tids:
+        return []
+    tid_col = func.split_part(Result.source_files[0].astext, "_", 1)
+    done = set()
+    for model in (QcStatusRequest, QcManualCheck):
+        done |= {
+            t for (t,) in db.query(tid_col)
+            .join(model, model.result_id == Result.id)
+            .filter(tid_col.in_(tids))
+            .distinct()
+        }
+    return [((r.ticket_id or "").strip(), r.qc_username) for r in rows
+            if (r.ticket_id or "").strip() in tids and (r.ticket_id or "").strip() not in done]
+
+
+def reassign_tickets_to_qc(
+    db: Session, pairs, assigned_by_username: str = None, source: str = "qc_nonaktif"
+) -> int:
+    """Pindahkan tiket yang SUDAH punya assignment ke QC baru, satu commit.
+
+    Kebalikan dari ``bulk_assign_tickets_to_qc`` (yang melewati tiket ber-pemilik):
+    di sini justru hanya tiket ber-pemilik yang disentuh; tiket yang di sela itu
+    dilepas orang lain dilewati. Tiap perpindahan dicatat ``reassign`` di
+    ``qc_assignment_events``. Mengembalikan jumlah tiket yang berpindah.
+    """
+    wanted = {}
+    for t, u in pairs or []:
+        t, u = str(t or "").strip(), str(u or "").strip()
+        if t and u:
+            wanted[t] = u
+    if not wanted:
+        return 0
+    now = datetime.utcnow()
+    moved = 0
+    for row in db.query(QcAssignment).filter(QcAssignment.ticket_id.in_(list(wanted))).all():
+        new = wanted[row.ticket_id]
+        if row.qc_username == new:
+            continue
+        record_assignment_event(
+            db, row.ticket_id, "reassign", qc_username=new,
+            previous_qc_username=row.qc_username, actor_username=assigned_by_username,
+            source=source, at=now,
+        )
+        row.qc_username = new
+        row.assigned_by_username = assigned_by_username
+        row.assigned_at = now
+        moved += 1
+    if moved:
+        db.commit()
+    return moved
 
 
 def assigned_ticket_ids_for_qc(db: Session, qc_username: str) -> list[str]:
