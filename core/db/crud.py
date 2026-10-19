@@ -2238,9 +2238,14 @@ def reference_gap_retry_plan(db: Session, since: datetime) -> list[dict]:
       bernilai null. Snapshot tanpa ``reference_data`` sama sekali (tiket lama,
       Collection) tidak ikut — definisinya sama dengan ``reference_snapshot_index``;
     * tidak sedang direproses (``_reprocess_item_active_clause``);
-    * tidak punya pengajuan Manual Status apa pun. Reproses membuat row bersih dan
-      menghapus row lama, jadi pengajuan yang sedang/selesai ditinjau ikut hilang —
-      keputusan manusia tidak boleh dibuang oleh jadwal otomatis.
+    * tidak punya vonis Manual Status yang sudah FINAL (``effective_appeal_status``
+      = approved). Reproses membuat row bersih dan menghapus row lama, jadi vonis
+      itu ikut hilang — keputusan manusia yang sudah disetujui tidak boleh dibuang
+      oleh jadwal otomatis. Pengajuan yang masih pending atau ditolak TIDAK
+      menghalangi (19 Oktober 2026, tiket 130309XxVf): QC bisa mengajukan PASS untuk
+      tiket yang belum pernah dinilai LLM, dan pengajuan itu tidak boleh menahan
+      tiketnya di PENDING tanpa skor selamanya. Pengajuannya ikut hilang bersama
+      row lama; QC mengajukan ulang setelah melihat hasil penilaian.
 
     Agent tidak terpetakan TIDAK ikut: itu bukan data yang dicari ulang ke DWH.
 
@@ -2287,9 +2292,12 @@ def reference_gap_retry_plan(db: Session, since: datetime) -> list[dict]:
     plans = [p for p in reprocess_plan_for_tickets(db, list(gaps_by_tid))
              if p["ticket_id"] not in busy]
     all_ids = [uuid.UUID(rid) for p in plans for rid in p["old_result_ids"]]
+    from compliance.error_codes import effective_appeal_status
+
     reviewed = {
-        str(rid) for (rid,) in
-        db.query(QcStatusRequest.result_id).filter(QcStatusRequest.result_id.in_(all_ids)).all()
+        str(q.result_id) for q in
+        db.query(QcStatusRequest).filter(QcStatusRequest.result_id.in_(all_ids)).all()
+        if effective_appeal_status(q) == "approved"
     } if all_ids else set()
     out = []
     for p in plans:
