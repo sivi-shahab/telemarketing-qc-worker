@@ -14,8 +14,10 @@ Tiap ``INTERVAL_MIN`` menit (beat, lihat ``celery_app``):
   2. tanyakan ulang DWH per tiket (``data_dwh.fetch_bundle_checked``; worker tidak
      membaca cache Redis, jadi jawabannya segar);
   3. bila CASHLINE dan CARD HOLDER kini KEDUANYA ada, kirim job reproses
-     ``scope="ticket"`` — alur yang sama persis dengan tombol Reprocess di Results.
-     Satu sisi saja belum cukup: gerbangnya akan memPENDING-kan tiket itu lagi;
+     ``scope="ticket"`` — alur yang sama dengan tombol Reprocess di Results, BEDANYA
+     pekerjaan QC row lama (Manual Status, riwayat, cek manual, dokumen) dibawa ke row
+     baru (``crud.carry_over_qc_work``). Satu sisi saja belum cukup: gerbangnya akan
+     memPENDING-kan tiket itu lagi;
   4. catat ringkasan putaran di ``app_settings`` (dibaca halaman Results).
 
 Saklar: ``REFERENCE_RETRY_ENABLED`` (bawaan menyala; ``0`` mematikan).
@@ -39,7 +41,7 @@ INTERVAL_MIN = 30
 # Rem per putaran: tiap tiket yang lolos = satu evaluasi LLM penuh. Sisanya diambil
 # putaran berikutnya.
 MAX_PER_RUN = int(os.getenv("REFERENCE_RETRY_MAX_PER_RUN", "50"))
-SYSTEM_USERNAME = "system:retry-data-acuan"
+SYSTEM_USERNAME = crud.REFERENCE_RETRY_USERNAME
 # Worker kube (10.158.3.13) menulis ke DB yang sama; kunci ini mencegah dua beat
 # mengantre tiket yang sama pada putaran yang sama.
 _LOCK_KEY = 20261019
