@@ -984,11 +984,17 @@ def one_result_per_ticket(db, results) -> list:
     sehingga 12-16 Oktober tercatat 1.148 baris untuk 211 ID. Per ID dipilih satu
     baris wakil:
 
+    - ada baris ``done`` dengan Manual Status FINAL (vonis human yang sudah
+      disetujui) -> yang terbaru di antaranya. Vonis itu berlaku untuk TIKETNYA,
+      bukan cuma baris tempat QC kebetulan mengajukannya (19 Oktober 2026, tiket
+      0803425lkJ: PASS yang disetujui TL QC di baris 16 Okt kalah oleh enam clone
+      JOB-3 berikutnya yang tetap FAIL, sehingga Qualified tidak pernah tampil);
     - ada baris ``done`` dengan AI Status Not Qualified (FAIL) -> yang terbaru di
       antaranya ("Return bila salah satu recording Return", keputusan bisnis);
     - selain itu baris ``done`` terbaru; tidak ada yang ``done`` -> baris terbaru;
     - baris ``done`` yang file-nya tercakup penuh oleh baris ``done`` lain (recording
-      baru sudah dinilai ulang di baris itu) diabaikan sebagai evaluasi usang.
+      baru sudah dinilai ulang di baris itu) diabaikan sebagai evaluasi usang —
+      termasuk vonis human di atasnya, yang dijatuhkan sebelum recording itu ada.
 
     Urutan ``results`` dipertahankan. Baris tanpa ticket id tetap berdiri sendiri.
     Status per ID untuk hitungan SQL memakai aturan yang sama:
@@ -1002,6 +1008,7 @@ def one_result_per_ticket(db, results) -> list:
         return rows
     multi_done = [r for g in groups.values() if len(g) > 1 for r in g if r.status == "done"]
     ai = ai_status_map(db, multi_done) if multi_done else {}
+    qc = crud.qc_status_requests_for(db, [str(r.id) for r in multi_done]) if multi_done else {}
 
     def _newest(cands):
         return max(cands, key=lambda r: r.uploaded_at or datetime.min)
@@ -1016,8 +1023,9 @@ def one_result_per_ticket(db, results) -> list:
         # sudah ikut dinilai di sana) adalah evaluasi usang — tidak ikut memvonis.
         sets = {r.id: set(r.source_files or []) for r in done}
         done = [r for r in done if not any(sets[r.id] < sets[o.id] for o in done)]
+        human = [r for r in done if manual_status_of(qc.get(str(r.id)))]
         fail = [r for r in done if ai.get(str(r.id)) == "FAIL"]
-        keep.add(_newest(fail or done or g).id)
+        keep.add(_newest(human or fail or done or g).id)
     return [r for r in rows if r.id in keep]
 
 
