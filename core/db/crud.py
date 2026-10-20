@@ -39,6 +39,7 @@ from db.models import (
     StatsSnapshot,
     TicketLoadDate,
     User,
+    UserChangeEvent,
 )
 # Reference data (CASHLINE / CARD HOLDER) sekarang dari DWH API (Aplikasi A),
 # bukan lagi tabel DB -> lihat services/data_dwh.py.
@@ -2993,6 +2994,58 @@ def unassign_tickets_of_qc(
         )
         db.delete(r)
     return len(rows)
+
+
+# Semua kolom teks yang menyimpan username orang lain (20 Oktober 2026). Sengaja
+# TANPA ``User.username`` (diganti pemanggil) dan ``UserChangeEvent.target_username``
+# (catatan historis, tetap NIP lama). test_rename_username memastikan kolom
+# ``*_username`` baru di model mana pun ikut terdaftar di sini.
+USERNAME_COLUMNS: tuple = (
+    (Result, "uploaded_by_username"),
+    (QcStatusRequest, "requested_by_username"),
+    (QcStatusRequest, "tl_qc_username"),
+    (QcStatusRequest, "reviewed_by_username"),
+    (ErrorCodeAppeal, "requested_by_username"),
+    (ErrorCodeAppeal, "tl_qc_username"),
+    (ErrorCodeAppeal, "reviewed_by_username"),
+    (QcAssignment, "qc_username"),
+    (QcAssignment, "assigned_by_username"),
+    (QcAssignmentEvent, "qc_username"),
+    (QcAssignmentEvent, "previous_qc_username"),
+    (QcAssignmentEvent, "actor_username"),
+    (QcStatusEvent, "actor_username"),
+    (QcManualCheck, "checked_by_username"),
+    (QcDatabase, "uploaded_by_username"),
+    (SalesDatabase, "uploaded_by_username"),
+    (ReprocessJob, "created_by_username"),
+    (AppSetting, "updated_by_username"),
+    (UserChangeEvent, "actor_username"),
+)
+
+
+def rename_username(db: Session, old: str, new: str) -> dict:
+    """Pindahkan SEMUA kolom username (``USERNAME_COLUMNS``) dari ``old`` ke ``new``,
+    TANPA commit (pemanggil yang commit bersama perubahan ``users``).
+
+    Pencocokan ``lower(trim(kolom)) == old`` — beberapa query membandingkan
+    case-insensitive, jadi data lama tidak dijamin seragam kapitalisasinya. Mengembalikan
+    ``{"tabel.kolom": jumlah_baris}`` hanya untuk kolom yang benar-benar berubah.
+    """
+    old_key = (old or "").strip().lower()
+    new_val = (new or "").strip()
+    if not old_key or not new_val:
+        raise ValueError("username lama dan baru wajib diisi")
+    out: dict = {}
+    for model, col in USERNAME_COLUMNS:
+        attr = getattr(model, col)
+        n = (
+            db.query(model)
+            .filter(func.lower(func.trim(attr)) == old_key)
+            .update({col: new_val}, synchronize_session=False)
+        )
+        if n:
+            out[f"{model.__tablename__}.{col}"] = n
+    return out
 
 
 def list_qc_assignments(db: Session) -> list[QcAssignment]:

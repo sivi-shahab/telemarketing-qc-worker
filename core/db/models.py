@@ -29,6 +29,10 @@ class User(Base):
     # maupun Admin; NULL selagi aktif. Dipakai batch auto assign untuk membagi ulang
     # tiket QC yang dinonaktifkan di slot berikutnya (19 Oktober 2026, migrasi 0068).
     deactivated_at = Column(DateTime, nullable=True)
+    # Kapan user terakhir berpindah dari role ``qc`` ke role lain (UTC naive), lewat
+    # Edit User. Dipakai batch auto assign untuk membagi ulang tiket QC itu di slot
+    # berikutnya, seperti ``deactivated_at`` (20 Oktober 2026, migrasi 0070).
+    left_qc_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
     created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
 
@@ -594,6 +598,30 @@ class QcAssignmentEvent(Base):
     actor_username = Column(String(100))
     # manual | auto | scheduler | lepas | lepas_semua | user_deleted | qc_nonaktif
     source = Column(String(20), nullable=False)
+    created_at = Column(DateTime, server_default=func.now(), index=True)
+
+
+class UserChangeEvent(Base):
+    """Riwayat APPEND-ONLY perubahan data user lewat Edit User (20 Oktober 2026).
+
+    Satu baris = satu field yang berubah (``username|name|email|role|password``),
+    ditulis di transaksi yang sama dengan perubahannya; tidak pernah di-update atau
+    dihapus. Untuk ``password`` nilai lama/baru SELALU NULL — kata sandi tidak pernah
+    disimpan di riwayat. Sengaja tanpa FK ke ``users`` (seperti ``QcAssignmentEvent``):
+    user yang dihapus tetap harus terbaca, dan ``target_username`` lama tidak ikut
+    diganti saat NIP berubah karena itu catatan historis.
+    """
+    __tablename__ = "user_change_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, index=True)
+    target_username = Column(String(100), index=True)
+    field = Column(String(20), nullable=False)
+    old_value = Column(Text)
+    new_value = Column(Text)
+    actor_user_id = Column(Integer)
+    actor_username = Column(String(100))
+    actor_role = Column(String(50))
     created_at = Column(DateTime, server_default=func.now(), index=True)
 
 
