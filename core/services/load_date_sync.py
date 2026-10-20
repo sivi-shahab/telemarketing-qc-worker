@@ -32,24 +32,37 @@ def sync_dates(db, dates: Iterable[date]) -> dict:
     """Salin tiket App C per tanggal ke ``ticket_load_dates``; ``{tanggal: jumlah baris}``.
 
     Commit per tanggal supaya tanggal yang sudah beres tidak hilang bila tanggal
-    berikutnya gagal.
+    berikutnya gagal. Tanggal diproses TERBARU DULU (20 Oktober 2026): tiket baru
+    hari ini yang paling dibutuhkan filter (tanpa barisnya jatuh ke aturan lama),
+    jadi tanggal lama yang bermasalah tidak boleh menahannya. Kegagalan apa pun
+    pada satu tanggal (App C, item rusak, DB) hanya melewati tanggal itu: rollback,
+    log lengkap, lanjut ke tanggal berikutnya. Baris lama tidak pernah dihapus.
     """
     result = {}
-    for d in dates:
+    for d in sorted(set(dates), reverse=True):
         try:
             page = tickets_daily.fetch_all(load_date=d.isoformat(), max_pages=MAX_PAGES)
         except tickets_daily.TicketsDailyError as exc:
             logger.warning("sinkron load_date %s dilewati, App C gagal: %s", d, exc)
             continue
-        if page.get("truncated"):
-            logger.warning("sinkron load_date %s terpotong di %s halaman; sebagian "
-                           "tiket tidak tersimpan", d, MAX_PAGES)
-        rows = []
-        for item in page.get("items") or []:
-            tid, ld = item.get("id"), item.get("load_date")
-            if not tid or not ld:
-                continue
-            rows.append((tid, date.fromisoformat(str(ld)[:10]), item.get("campaign")))
-        result[d] = crud.upsert_ticket_load_dates(db, rows)
-        db.commit()
+        except Exception:
+            logger.exception("sinkron load_date %s dilewati, error tak terduga saat ambil App C", d)
+            continue
+        try:
+            if page.get("truncated"):
+                logger.warning("sinkron load_date %s terpotong di %s halaman; sebagian "
+                               "tiket tidak tersimpan", d, MAX_PAGES)
+            rows = []
+            for item in page.get("items") or []:
+                tid, ld = item.get("id"), item.get("load_date")
+                if not tid or not ld:
+                    continue
+                rows.append((tid, date.fromisoformat(str(ld)[:10]), item.get("campaign")))
+            count = crud.upsert_ticket_load_dates(db, rows)
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception("sinkron load_date %s dilewati, gagal diproses/disimpan", d)
+            continue
+        result[d] = count
     return result
