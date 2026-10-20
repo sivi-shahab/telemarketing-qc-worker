@@ -3122,30 +3122,46 @@ def bulk_assign_tickets_to_qc(
 
 
 def qc_reassign_candidates(db: Session, since: datetime, slot_start: datetime) -> list:
-    """Tiket QC nonaktif yang harus dibagi ulang: ``[(ticket_id, qc_lama), ...]``.
+    """Tiket QC yang harus dibagi ulang: ``[(ticket_id, qc_lama, source), ...]``.
 
-    Aturan (19 Oktober 2026), semua batas waktu UTC naive:
+    Dua jalur pemilik (``source``), semua batas waktu UTC naive:
 
-    * QC ``role='qc'`` yang SEKARANG nonaktif dan dinonaktifkan HARI INI
-      (``since`` <= ``deactivated_at``) — dari Kelola QC maupun Admin;
-    * dinonaktifkan sebelum slot aktif (``deactivated_at`` <= ``slot_start``), jadi
-      tiketnya dibagi ulang di slot BERIKUTNYA sesudah ia nonaktif, bukan di cek
-      5 menit yang kebetulan masih dalam slot yang sama;
-    * hanya tiket yang di-assign ke QC itu HARI INI (``assigned_at`` >= ``since``).
+    * ``qc_nonaktif`` (19 Oktober 2026) — QC ``role='qc'`` yang SEKARANG nonaktif dan
+      dinonaktifkan HARI INI (``since`` <= ``deactivated_at``), dari Kelola QC maupun
+      Admin;
+    * ``qc_ganti_role`` (20 Oktober 2026, Edit User) — user yang SEKARANG ``role`` bukan
+      ``qc`` dan keluar dari QC HARI INI (``since`` <= ``left_qc_at``), aktif atau tidak.
+      User yang sudah kembali ke ``qc`` tidak dihitung. Bila satu user memenuhi
+      keduanya, ``qc_nonaktif`` yang dipakai.
+
+    Aturan yang sama untuk keduanya:
+
+    * waktu keluarnya sebelum slot aktif (<= ``slot_start``), jadi tiketnya dibagi ulang
+      di slot BERIKUTNYA, bukan di cek 5 menit yang kebetulan masih dalam slot yang sama;
+    * hanya tiket yang di-assign ke user itu HARI INI (``assigned_at`` >= ``since``).
       Tiket hari-hari sebelumnya tetap miliknya, dan besok aturan ini tidak berlaku;
     * hanya tiket yang BELUM dikerjakan: tidak ada baris Result tiket itu yang punya
       pengajuan Manual Status (``qc_status_requests``) atau tanda sudah dicek manual
       (``qc_manual_checks``).
     """
-    names = {
-        (u or "").strip().casefold()
-        for (u,) in db.query(User.username).filter(
-            User.role == "qc", User.is_active.is_(False),
-            User.deactivated_at.isnot(None),
-            User.deactivated_at >= since, User.deactivated_at <= slot_start,
-        ).all()
-        if (u or "").strip()
-    }
+    def _names(*conds):
+        return {
+            (u or "").strip().casefold()
+            for (u,) in db.query(User.username).filter(*conds).all()
+            if (u or "").strip()
+        }
+
+    nonaktif = _names(
+        User.role == "qc", User.is_active.is_(False),
+        User.deactivated_at.isnot(None),
+        User.deactivated_at >= since, User.deactivated_at <= slot_start,
+    )
+    ganti_role = _names(
+        User.role != "qc",
+        User.left_qc_at.isnot(None),
+        User.left_qc_at >= since, User.left_qc_at <= slot_start,
+    ) - nonaktif
+    names = nonaktif | ganti_role
     if not names:
         return []
     rows = (
@@ -3166,7 +3182,10 @@ def qc_reassign_candidates(db: Session, since: datetime, slot_start: datetime) -
             .filter(tid_col.in_(tids))
             .distinct()
         }
-    return [((r.ticket_id or "").strip(), r.qc_username) for r in rows
+    return [((r.ticket_id or "").strip(), r.qc_username,
+             "qc_nonaktif" if (r.qc_username or "").strip().casefold() in nonaktif
+             else "qc_ganti_role")
+            for r in rows
             if (r.ticket_id or "").strip() in tids and (r.ticket_id or "").strip() not in done]
 
 

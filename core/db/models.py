@@ -596,7 +596,7 @@ class QcAssignmentEvent(Base):
     # QC pemegang SEBELUM kejadian (NULL untuk assign pertama).
     previous_qc_username = Column(String(100))
     actor_username = Column(String(100))
-    # manual | auto | scheduler | lepas | lepas_semua | user_deleted | qc_nonaktif
+    # manual | auto | scheduler | lepas | lepas_semua | user_deleted | qc_nonaktif | qc_ganti_role
     source = Column(String(20), nullable=False)
     created_at = Column(DateTime, server_default=func.now(), index=True)
 
