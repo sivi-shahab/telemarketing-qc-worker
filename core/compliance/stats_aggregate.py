@@ -956,7 +956,9 @@ def ai_status_map(db, results) -> dict:
     ids = [str(r.id) for r in rows]
     eval_by_id = crud.result_json_map(db, ids)
     appeals = crud.error_code_appeals_for_results(db, ids)
-    qc_map = crud.qc_status_requests_for(db, ids)
+    # Vonis TIKET, bukan cuma baris ini — clone JOB-3 ikut terkunci ke vonis final
+    # yang dijatuhkan di baris lain milik tiket yang sama (``ticket_qc_requests``).
+    qc_map = ticket_qc_requests(db, rows)
     mdocs = _missing_docs_map(db, rows, eval_by_id)
     submit_times = _submit_time_map(db, rows)
     gaps = data_gap_map(db, rows)
@@ -985,7 +987,7 @@ def one_result_per_ticket(db, results) -> list:
     baris wakil:
 
     - ada baris ``done`` dengan Manual Status FINAL (vonis human yang sudah
-      disetujui) -> yang terbaru di antaranya. Vonis itu berlaku untuk TIKETNYA,
+      disetujui) -> yang DIPUTUS paling akhir (``_verdict_row``). Vonis itu berlaku untuk TIKETNYA,
       bukan cuma baris tempat QC kebetulan mengajukannya (19 Oktober 2026, tiket
       0803425lkJ: PASS yang disetujui TL QC di baris 16 Okt kalah oleh enam clone
       JOB-3 berikutnya yang tetap FAIL, sehingga Qualified tidak pernah tampil);
@@ -1021,12 +1023,83 @@ def one_result_per_ticket(db, results) -> list:
         done = [r for r in g if r.status == "done"]
         # Baris yang file-nya tercakup PENUH oleh baris done lain (recording baru
         # sudah ikut dinilai di sana) adalah evaluasi usang — tidak ikut memvonis.
-        sets = {r.id: set(r.source_files or []) for r in done}
-        done = [r for r in done if not any(sets[r.id] < sets[o.id] for o in done)]
-        human = [r for r in done if manual_status_of(qc.get(str(r.id)))]
+        done = _current_done(done)
+        verdict = _verdict_row(done, qc)
+        if verdict is not None:
+            keep.add(verdict.id)
+            continue
         fail = [r for r in done if ai.get(str(r.id)) == "FAIL"]
-        keep.add(_newest(human or fail or done or g).id)
+        keep.add(_newest(fail or done or g).id)
     return [r for r in rows if r.id in keep]
+
+
+def _current_done(done: list) -> list:
+    """Baris ``done`` yang BUKAN evaluasi usang: file-nya tidak tercakup penuh oleh
+    baris done lain milik tiket yang sama (recording baru sudah dinilai di sana)."""
+    sets = {r.id: set(r.source_files or []) for r in done}
+    return [r for r in done if not any(sets[r.id] < sets[o.id] for o in done)]
+
+
+def _verdict_time(qc_request) -> datetime:
+    """Kapan vonis human terakhir diputus/diubah (usulan, keputusan TL QC, SPQ Head)."""
+    times = [
+        t for t in (
+            getattr(qc_request, "requested_at", None),
+            getattr(qc_request, "tl_qc_reviewed_at", None),
+            getattr(qc_request, "reviewed_at", None),
+        ) if t
+    ]
+    return max(times) if times else datetime.min
+
+
+def _verdict_row(done: list, qc: dict):
+    """Baris yang Manual Status FINAL-nya berlaku untuk tiket, atau None.
+
+    ``done`` = baris done non-usang SATU tiket; ``qc`` = ``{result_id: QcStatusRequest}``.
+    Bila beberapa baris punya vonis final (QC mengubah vonis lewat clone lain), yang
+    diputus PALING AKHIR yang berlaku; seri -> baris yang di-upload paling baru.
+    Dipakai bersama oleh Statistics (``one_result_per_ticket``) dan menu Results
+    (``ticket_qc_requests``) supaya keduanya membaca vonis yang sama.
+    """
+    human = [r for r in done if manual_status_of(qc.get(str(r.id)))]
+    if not human:
+        return None
+    return max(human, key=lambda r: (_verdict_time(qc[str(r.id)]), r.uploaded_at or datetime.min))
+
+
+def ticket_qc_requests(db, results) -> dict:
+    """``{result_id: QcStatusRequest}`` dengan vonis human yang berlaku untuk TIKET-nya.
+
+    19 Oktober 2026: JOB-3 membuat beberapa baris Result (clone) untuk satu ticket
+    id, dan menu Results menampilkan semuanya. Vonis yang disetujui di satu baris
+    (0803425lkJ: PASS di baris 16 Okt) tidak terlihat di enam clone sesudahnya —
+    baris-baris itu tetap berbunyi Not Qualified. Di sini baris ``done`` ikut
+    membaca vonis final tiketnya (``_verdict_row``) selama file-nya tercakup penuh
+    oleh baris bervonis itu: recording yang belum pernah dilihat human tidak ikut
+    divonis. Baris lain mempertahankan request miliknya sendiri.
+
+    HANYA untuk dibaca (kolom AI/Manual Status dan filternya). Alur kerja — antrean
+    Manual Check, approve/reject, riwayat — tetap memakai request milik baris itu
+    sendiri lewat ``crud.qc_status_requests_for``.
+    """
+    rows = list(results or [])
+    out = crud.qc_status_requests_for(db, [str(r.id) for r in rows]) if rows else {}
+    tids = {_customer_id(r.source_files) for r in rows if r.status == "done"} - {None, ""}
+    if not tids:
+        return out
+    siblings = crud.done_results_by_ticket_ids(db, tids)
+    by_tid: dict = defaultdict(list)
+    for s in siblings:
+        by_tid[_customer_id(s.source_files)].append(s)
+    if not any(len(g) > 1 for g in by_tid.values()):
+        return out
+    sib_qc = crud.qc_status_requests_for(db, [str(s.id) for s in siblings])
+    verdicts = {tid: _verdict_row(_current_done(g), sib_qc) for tid, g in by_tid.items() if len(g) > 1}
+    for r in rows:
+        v = verdicts.get(_customer_id(r.source_files)) if r.status == "done" else None
+        if v is not None and set(r.source_files or []) <= set(v.source_files or []):
+            out[str(r.id)] = sib_qc[str(v.id)]
+    return out
 
 
 def manual_status_of(qc_request) -> "str | None":
