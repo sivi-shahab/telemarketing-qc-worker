@@ -37,6 +37,7 @@ from db.models import (
     ResultData,
     SalesDatabase,
     StatsSnapshot,
+    TicketLoadDate,
     User,
 )
 # Reference data (CASHLINE / CARD HOLDER) sekarang dari DWH API (Aplikasi A),
@@ -475,6 +476,30 @@ def _series_date_expr(db: Session):
     )
 
 
+def _ticket_date_expr(db: Session):
+    """Tanggal tiket untuk filter Results = ``load_date`` App C TERAKHIR (20 Okt 2026).
+
+    Sebelumnya filter memakai Tanggal Agree (``_series_date_expr``), sehingga tiket
+    yang di-load App C tanggal 13 tapi Agree-nya lebih awal tidak muncul di rentang
+    load_date yang dipakai operator. Satu tiket bisa punya beberapa load_date
+    (``ticket_load_dates``); yang dipakai hanya yang TERBARU, jadi tiket masuk
+    rentang bila load terakhirnya ada di rentang.
+
+    Tiket tanpa baris di ``ticket_load_dates`` jatuh ke ``_series_date_expr``
+    (aturan lama) persis. ``ticket_id`` = prefix sebelum ``_`` pada file sumber
+    pertama, sama dengan ``customer_ids``. Subquery berkorelasi memakai PK
+    ``(ticket_id, load_date)``, jadi tetap satu index lookup per baris.
+    """
+    cid = func.split_part(Result.source_files[0].astext, "_", 1)
+    load_subq = (
+        db.query(func.max(TicketLoadDate.load_date))
+        .filter(TicketLoadDate.ticket_id == cid)
+        .correlate(Result)
+        .scalar_subquery()
+    )
+    return func.coalesce(load_subq, _series_date_expr(db))
+
+
 def latest_result_date(
     db: Session,
     campaigns: Optional[list[str]] = None,
@@ -498,7 +523,7 @@ def latest_result_date(
         return None
     if campaigns is not None and not campaigns:
         return None
-    q = hidden_ticket_filter(db.query(func.max(_series_date_expr(db))))
+    q = hidden_ticket_filter(db.query(func.max(_ticket_date_expr(db))))
     q = _apply_result_scope_filters(
         q,
         campaigns=campaigns,
@@ -618,18 +643,19 @@ def list_results(
             func.split_part(Result.source_files[0].astext, "_", 1).in_(customer_ids)
         )
     if date_start is not None or date_end is not None:
-        # Filter by the ticket's ``submit_time`` date (disbursement submission), same
-        # basis as the Statistics stacked chart.
+        # Filter by the ticket's date. Sejak 20 Oktober 2026 sumbernya ``load_date``
+        # App C TERAKHIR (``ticket_load_dates``); tiket tanpa baris di sana memakai
+        # aturan lama (Tanggal Agree = ``submit_time``, lalu generated_at/uploaded_at).
         #
-        # [FIX] Sumbernya SEKARANG snapshot ``reference_data.cashline.submit_time``
+        # [FIX lama] Sumbernya SEKARANG snapshot ``reference_data.cashline.submit_time``
         # di ``result_data.result_json``, BUKAN tabel ``tms_cashline`` yang sudah
         # tidak diisi lagi sejak reference data pindah ke DWH API. Subquery lama
         # tidak pernah error (hanya selalu NULL), jadi filter tanggal diam-diam
         # jatuh ke generated_at/uploaded_at dan tidak sejalan dengan grafik.
         #
         # Ekspresinya dibagi dengan ``latest_result_date`` — lihat
-        # ``_series_date_expr``.
-        series_date = _series_date_expr(db)
+        # ``_ticket_date_expr``.
+        series_date = _ticket_date_expr(db)
         if date_start is not None:
             q = q.filter(series_date >= date_start)
         if date_end is not None:
@@ -1172,6 +1198,59 @@ def _cashline_ids_from_dwh(cids: list) -> dict:
     return out
 
 
+def upsert_ticket_load_dates(db: Session, rows: Iterable[tuple]) -> int:
+    """Simpan ``(ticket_id, load_date, campaign)`` dari App C ke ``ticket_load_dates``.
+
+    Idempoten: baris yang sama hanya menyegarkan ``synced_at`` dan ``campaign``.
+    ``ticket_id`` di-strip dan baris dengan ticket_id kosong dibuang. Mengembalikan
+    jumlah baris UNIK ``(ticket_id, load_date)`` yang dikirim ke DB (sesudah dedup).
+    TIDAK commit — pemanggil yang commit.
+
+    Duplikat ``(ticket_id, load_date)`` dalam satu batch digabung, baris TERAKHIR
+    menang: /tickets-daily App C pernah mengembalikan baris dobel antar halaman, dan
+    ``ON CONFLICT DO UPDATE`` menolak menyentuh baris yang sama dua kali dalam satu
+    statement (CardinalityViolation).
+    """
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    dedup: dict = {}
+    for ticket_id, load_date, campaign in rows:
+        tid = (ticket_id or "").strip()
+        if not tid:
+            continue
+        dedup[(tid, load_date)] = {"ticket_id": tid, "load_date": load_date, "campaign": campaign}
+    values = list(dedup.values())
+    if not values:
+        return 0
+    stmt = pg_insert(TicketLoadDate).values(values)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["ticket_id", "load_date"],
+        set_={"synced_at": func.now(), "campaign": stmt.excluded.campaign},
+    )
+    db.execute(stmt)
+    return len(values)
+
+
+def load_dates_by_ticket(db: Session, ticket_ids: Iterable[str]) -> dict:
+    """``{ticket_id: [load_date, ...]}`` urut naik; tiket tanpa baris tidak muncul.
+
+    ``ticket_id`` di-strip. Input kosong -> ``{}`` tanpa query.
+    """
+    ids = {(t or "").strip() for t in ticket_ids}
+    ids.discard("")
+    if not ids:
+        return {}
+    out: dict = defaultdict(list)
+    q = (
+        db.query(TicketLoadDate.ticket_id, TicketLoadDate.load_date)
+        .filter(TicketLoadDate.ticket_id.in_(ids))
+        .order_by(TicketLoadDate.ticket_id, TicketLoadDate.load_date)
+    )
+    for tid, ld in q:
+        out[tid].append(ld)
+    return dict(out)
+
+
 def cashline_agent_index(db: Session) -> dict:
     """``{cid: {"agent_id": str|None, "submit_time": str|None}}`` untuk SEMUA result.
 
@@ -1262,7 +1341,8 @@ def _stats_signature(db: Session) -> str:
     count + latest time, appeal count + latest review time (approved appeals change
     error counts), Manual Status count + latest request/review time (an approved
     human verdict locks the AI Status and picks the ticket's representative row),
-    and the active sales-database file (drives agent name / TL / AM).
+    and the active sales-database file (drives agent name / TL / AM), plus
+    ``ticket_load_dates`` count + latest load_date (drives each ticket's date).
 
     Review time = BOTH tiers: Team Leader QC finalizes on its own and only writes
     ``tl_qc_reviewed_at`` — with ``reviewed_at`` (SPQ Head) alone a TL QC decision
@@ -1285,6 +1365,14 @@ def _stats_signature(db: Session) -> str:
         func.count(QcStatusRequest.id), func.max(QcStatusRequest.requested_at),
         func.max(QcStatusRequest.tl_qc_reviewed_at), func.max(QcStatusRequest.reviewed_at),
     ).one()
+    # ``ticket_load_dates`` (20 Oktober 2026): tanggal tiket Statistics = load_date
+    # App C terakhir, jadi baris baru dari sync menggeser tiket ke hari lain tanpa
+    # ada perubahan result. Sengaja count + max(load_date), BUKAN max(synced_at):
+    # upsert 30 menitan menaikkan synced_at setiap kali jalan walau isinya sama,
+    # sehingga snapshot akan gugur terus-menerus.
+    ld_count, ld_max = db.query(
+        func.count(), func.max(TicketLoadDate.load_date)
+    ).select_from(TicketLoadDate).one()
     sales = get_active_sales_database(db)
     sales_key = sales.object_path if sales else ""
     # Bump when the snapshot PAYLOAD SHAPE or COMPUTED VALUES change so old cached
@@ -1377,7 +1465,14 @@ def _stats_signature(db: Session) -> str:
     # v30: baris wakil per ID mendahulukan baris ber-Manual Status final (19 Okt
     #      2026, tiket 0803425lkJ) — vonis yang sudah ada kini memilih baris lain
     #      tanpa ada data baru; sidik jari juga ikut Manual Status + keputusan TL QC.
-    version = "v30"
+    # v31: tanggal tiket di filter & grafik Statistics (Failure Reason, Hierarki,
+    #      Failure Rate, AI Status per waktu, QC Productivity) pindah dari Tanggal
+    #      Agree ke ``load_date`` App C TERAKHIR (20 Okt 2026), sama dengan Results;
+    #      tiket tanpa baris App C tetap aturan lama. Snapshot bertanggal lama HARUS
+    #      gugur. Tenggat H+2 tetap Tanggal Agree. Sidik jari juga ikut
+    #      ``ticket_load_dates`` (count + max load_date) supaya load_date baru dari
+    #      sync langsung menggugurkan snapshot, sama cepatnya dengan Results.
+    version = "v31"
     sla = "1" if get_doc_sla_enabled(db) else "0"
     # Sidik jari daftar tersembunyi. WAJIB ikut: tanpa ini snapshot yang sudah
     # ter-cache akan terus menyajikan angka tiket yang baru disembunyikan sampai ada
@@ -1392,6 +1487,7 @@ def _stats_signature(db: Session) -> str:
         f"{version}|{res_count}|{res_up}|{res_done}|{rd_count}|{rd_max}"
         f"|{ap_count}|{ap_rev}|{ap_tl}|qs{qs_count}|{qs_req}|{qs_tl}|{qs_rev}"
         f"|{sales_key}|sla{sla}|hid{hidden_key}|col{collection_key}"
+        f"|ld{ld_count}|{ld_max}"
     )
 
 
@@ -3269,8 +3365,9 @@ def qc_performance_rows(db: Session, campaign: str = None,
     tiket ke jendela tanggal yang sama dengan filter di panel "AI Status — per
     waktu" — dipasang di tab Failure Rate supaya tabel ini ikut dinamis mengikuti
     filter tanggal, bukan cuma pohon Hierarki-nya. Tanggal tiap tiket memakai
-    aturan "chart date" yang sama dengan grafik itu (TMS submit_time, jatuh balik
-    ke tanggal transkrip) lewat ``stats_aggregate.ticket_chart_dates``.
+    aturan "chart date" yang sama dengan grafik itu (sejak 20 Oktober 2026
+    ``load_date`` App C TERAKHIR; tanpa baris App C jatuh ke TMS submit_time, lalu
+    tanggal transkrip) lewat ``stats_aggregate.ticket_date_windows``.
     """
     # Filter campaign (tab Hierarki Failure Rate): daftar ticket id milik campaign itu.
     # ``QcAssignment`` menyimpan ticket_id, bukan campaign, jadi dipetakan lewat
@@ -3309,16 +3406,15 @@ def qc_performance_rows(db: Session, campaign: str = None,
         # crud.error_code_appeals_for_results dkk.), jadi impor timbal balik di
         # level atas akan membentuk lingkaran — pola yang sama dipakai
         # ``get_or_build_stats_snapshot`` di bawah.
-        from compliance.stats_aggregate import ticket_chart_dates
+        from compliance.stats_aggregate import ticket_date_windows
 
         all_ticket_ids = {t for s in assigned.values() for t in s}
-        chart_dates = ticket_chart_dates(db, all_ticket_ids)
+        windows = ticket_date_windows(db, all_ticket_ids)
         for u in list(assigned):
             assigned[u] = {
                 t for t in assigned[u]
-                if (d := chart_dates.get(t)) is not None
-                and (date_start is None or d >= date_start)
-                and (date_end is None or d <= date_end)
+                if (td := windows.get(t)) is not None
+                and td.in_window(date_start, date_end)
             }
 
     checks = db.query(QcManualCheck).all()
