@@ -16,7 +16,9 @@ memakai :func:`distribute_evenly`.
 
 Sejak 19 Oktober 2026 batch terjadwal juga MEMBAGI ULANG tiket QC yang dinonaktifkan
 hari ini (Kelola QC atau Admin) dan belum dikerjakan, di slot berikutnya sesudah QC itu
-nonaktif — lihat :func:`reassign_from_inactive`.
+nonaktif — lihat :func:`reassign_from_inactive`. Sejak 20 Oktober 2026 (Edit User)
+tiket user yang pindah role dari QC (``qc_ganti_role``) ikut dibagi ulang dengan cara
+yang sama.
 
 Diport dari 4-service@e17ecca (5 Oktober 2026). Bedanya dengan versi itu:
 
@@ -446,34 +448,42 @@ def run_scheduled_batch(db, now: Optional[datetime] = None) -> dict:
 
 
 def reassign_from_inactive(db, qc_users, slot_start, since, assignments, campaign_all) -> dict:
-    """Bagi ulang tiket QC yang dinonaktifkan hari ini ke ``qc_users`` (QC aktif) —
-    ``{qc_baru: jumlah}``, kosong bila tidak ada.
+    """Bagi ulang tiket QC yang dinonaktifkan atau pindah role hari ini ke ``qc_users``
+    (QC aktif) — ``{qc_baru: jumlah}``, kosong bila tidak ada.
 
     Pemilihan tiketnya di ``crud.qc_reassign_candidates`` (assign hari ini, belum ada
-    Manual Status / cek manual, QC nonaktif sebelum ``slot_start``). Pembagiannya
-    aturan yang sama dengan tiket baru (:func:`distribute_daily`, rata harian per
-    campaign); beban harian dihitung TANPA tiket yang dipindah, jadi QC aktif
-    menerimanya seolah tiket baru. Dicatat ``reassign`` dengan source ``qc_nonaktif``.
+    Manual Status / cek manual, QC nonaktif / keluar dari QC sebelum ``slot_start``).
+    Pembagiannya aturan yang sama dengan tiket baru (:func:`distribute_daily`, rata
+    harian per campaign); beban harian dihitung TANPA tiket yang dipindah, jadi QC aktif
+    menerimanya seolah tiket baru. Dicatat ``reassign`` dengan source ``qc_nonaktif``
+    atau ``qc_ganti_role`` sesuai asal tiketnya.
     """
     slot_utc = slot_start.astimezone(timezone.utc).replace(tzinfo=None)
     moving = crud.qc_reassign_candidates(db, since=since, slot_start=slot_utc)
     if not moving or not qc_users:
         return {}
-    tids = [t for t, _old in moving]
+    tids = [t for t, _old, _src in moving]
+    source_of = {t: src for t, _old, src in moving}
     moving_set = set(tids)
     campaign_of = {t: c for t, c in crud.campaign_by_ticket_ids(db, tids).items() if t in moving_set}
     campaign_of.update({t: campaign_all[t] for t in tids if t in campaign_all})
     staying = [a for a in assignments if (a.ticket_id or "").strip() not in moving_set]
     total, per_campaign = daily_loads(staying, since, {**campaign_all, **campaign_of})
     pairs = distribute_daily(tids, qc_users, campaign_of, total, per_campaign)
-    moved = crud.reassign_tickets_to_qc(
-        db, pairs, assigned_by_username=SCHEDULER_USERNAME, source="qc_nonaktif",
-    )
+    # Satu pembagian rata untuk semuanya, tetapi dicatat per source.
+    moved = 0
+    out: dict = {}
+    for source in sorted(set(source_of.values())):
+        mine = [(t, owner) for t, owner in pairs if source_of.get(t) == source]
+        n = crud.reassign_tickets_to_qc(
+            db, mine, assigned_by_username=SCHEDULER_USERNAME, source=source,
+        )
+        if n:
+            moved += n
+            for _tid, owner in mine:
+                out[owner] = out.get(owner, 0) + 1
     if not moved:
         return {}
-    out: dict = {}
-    for _tid, owner in pairs:
-        out[owner] = out.get(owner, 0) + 1
-    logger.info("[auto-assign] %d tiket QC nonaktif dibagi ulang: %s (dari %s)", moved, out,
-                sorted({old for _t, old in moving}))
+    logger.info("[auto-assign] %d tiket QC nonaktif/ganti role dibagi ulang: %s (dari %s)",
+                moved, out, sorted({old for _t, old, _s in moving}))
     return out

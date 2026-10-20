@@ -39,6 +39,7 @@ from db.models import (
     StatsSnapshot,
     TicketLoadDate,
     User,
+    UserChangeEvent,
 )
 # Reference data (CASHLINE / CARD HOLDER) sekarang dari DWH API (Aplikasi A),
 # bukan lagi tabel DB -> lihat services/data_dwh.py.
@@ -2995,6 +2996,58 @@ def unassign_tickets_of_qc(
     return len(rows)
 
 
+# Semua kolom teks yang menyimpan username orang lain (20 Oktober 2026). Sengaja
+# TANPA ``User.username`` (diganti pemanggil) dan ``UserChangeEvent.target_username``
+# (catatan historis, tetap NIP lama). test_rename_username memastikan kolom
+# ``*_username`` baru di model mana pun ikut terdaftar di sini.
+USERNAME_COLUMNS: tuple = (
+    (Result, "uploaded_by_username"),
+    (QcStatusRequest, "requested_by_username"),
+    (QcStatusRequest, "tl_qc_username"),
+    (QcStatusRequest, "reviewed_by_username"),
+    (ErrorCodeAppeal, "requested_by_username"),
+    (ErrorCodeAppeal, "tl_qc_username"),
+    (ErrorCodeAppeal, "reviewed_by_username"),
+    (QcAssignment, "qc_username"),
+    (QcAssignment, "assigned_by_username"),
+    (QcAssignmentEvent, "qc_username"),
+    (QcAssignmentEvent, "previous_qc_username"),
+    (QcAssignmentEvent, "actor_username"),
+    (QcStatusEvent, "actor_username"),
+    (QcManualCheck, "checked_by_username"),
+    (QcDatabase, "uploaded_by_username"),
+    (SalesDatabase, "uploaded_by_username"),
+    (ReprocessJob, "created_by_username"),
+    (AppSetting, "updated_by_username"),
+    (UserChangeEvent, "actor_username"),
+)
+
+
+def rename_username(db: Session, old: str, new: str) -> dict:
+    """Pindahkan SEMUA kolom username (``USERNAME_COLUMNS``) dari ``old`` ke ``new``,
+    TANPA commit (pemanggil yang commit bersama perubahan ``users``).
+
+    Pencocokan ``lower(trim(kolom)) == old`` — beberapa query membandingkan
+    case-insensitive, jadi data lama tidak dijamin seragam kapitalisasinya. Mengembalikan
+    ``{"tabel.kolom": jumlah_baris}`` hanya untuk kolom yang benar-benar berubah.
+    """
+    old_key = (old or "").strip().lower()
+    new_val = (new or "").strip()
+    if not old_key or not new_val:
+        raise ValueError("username lama dan baru wajib diisi")
+    out: dict = {}
+    for model, col in USERNAME_COLUMNS:
+        attr = getattr(model, col)
+        n = (
+            db.query(model)
+            .filter(func.lower(func.trim(attr)) == old_key)
+            .update({col: new_val}, synchronize_session=False)
+        )
+        if n:
+            out[f"{model.__tablename__}.{col}"] = n
+    return out
+
+
 def list_qc_assignments(db: Session) -> list[QcAssignment]:
     """All QC ticket assignments, newest first."""
     return db.query(QcAssignment).order_by(QcAssignment.assigned_at.desc()).all()
@@ -3069,30 +3122,46 @@ def bulk_assign_tickets_to_qc(
 
 
 def qc_reassign_candidates(db: Session, since: datetime, slot_start: datetime) -> list:
-    """Tiket QC nonaktif yang harus dibagi ulang: ``[(ticket_id, qc_lama), ...]``.
+    """Tiket QC yang harus dibagi ulang: ``[(ticket_id, qc_lama, source), ...]``.
 
-    Aturan (19 Oktober 2026), semua batas waktu UTC naive:
+    Dua jalur pemilik (``source``), semua batas waktu UTC naive:
 
-    * QC ``role='qc'`` yang SEKARANG nonaktif dan dinonaktifkan HARI INI
-      (``since`` <= ``deactivated_at``) — dari Kelola QC maupun Admin;
-    * dinonaktifkan sebelum slot aktif (``deactivated_at`` <= ``slot_start``), jadi
-      tiketnya dibagi ulang di slot BERIKUTNYA sesudah ia nonaktif, bukan di cek
-      5 menit yang kebetulan masih dalam slot yang sama;
-    * hanya tiket yang di-assign ke QC itu HARI INI (``assigned_at`` >= ``since``).
+    * ``qc_nonaktif`` (19 Oktober 2026) — QC ``role='qc'`` yang SEKARANG nonaktif dan
+      dinonaktifkan HARI INI (``since`` <= ``deactivated_at``), dari Kelola QC maupun
+      Admin;
+    * ``qc_ganti_role`` (20 Oktober 2026, Edit User) — user yang SEKARANG ``role`` bukan
+      ``qc`` dan keluar dari QC HARI INI (``since`` <= ``left_qc_at``), aktif atau tidak.
+      User yang sudah kembali ke ``qc`` tidak dihitung. Bila satu user memenuhi
+      keduanya, ``qc_nonaktif`` yang dipakai.
+
+    Aturan yang sama untuk keduanya:
+
+    * waktu keluarnya sebelum slot aktif (<= ``slot_start``), jadi tiketnya dibagi ulang
+      di slot BERIKUTNYA, bukan di cek 5 menit yang kebetulan masih dalam slot yang sama;
+    * hanya tiket yang di-assign ke user itu HARI INI (``assigned_at`` >= ``since``).
       Tiket hari-hari sebelumnya tetap miliknya, dan besok aturan ini tidak berlaku;
     * hanya tiket yang BELUM dikerjakan: tidak ada baris Result tiket itu yang punya
       pengajuan Manual Status (``qc_status_requests``) atau tanda sudah dicek manual
       (``qc_manual_checks``).
     """
-    names = {
-        (u or "").strip().casefold()
-        for (u,) in db.query(User.username).filter(
-            User.role == "qc", User.is_active.is_(False),
-            User.deactivated_at.isnot(None),
-            User.deactivated_at >= since, User.deactivated_at <= slot_start,
-        ).all()
-        if (u or "").strip()
-    }
+    def _names(*conds):
+        return {
+            (u or "").strip().casefold()
+            for (u,) in db.query(User.username).filter(*conds).all()
+            if (u or "").strip()
+        }
+
+    nonaktif = _names(
+        User.role == "qc", User.is_active.is_(False),
+        User.deactivated_at.isnot(None),
+        User.deactivated_at >= since, User.deactivated_at <= slot_start,
+    )
+    ganti_role = _names(
+        User.role != "qc",
+        User.left_qc_at.isnot(None),
+        User.left_qc_at >= since, User.left_qc_at <= slot_start,
+    ) - nonaktif
+    names = nonaktif | ganti_role
     if not names:
         return []
     rows = (
@@ -3113,7 +3182,10 @@ def qc_reassign_candidates(db: Session, since: datetime, slot_start: datetime) -
             .filter(tid_col.in_(tids))
             .distinct()
         }
-    return [((r.ticket_id or "").strip(), r.qc_username) for r in rows
+    return [((r.ticket_id or "").strip(), r.qc_username,
+             "qc_nonaktif" if (r.qc_username or "").strip().casefold() in nonaktif
+             else "qc_ganti_role")
+            for r in rows
             if (r.ticket_id or "").strip() in tids and (r.ticket_id or "").strip() not in done]
 
 
