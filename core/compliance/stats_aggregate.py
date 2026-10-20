@@ -29,6 +29,7 @@ at most once per WIB day and cached — see ``crud.get_or_build_stats_snapshot``
 """
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
+from typing import NamedTuple
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import false, func
@@ -1458,22 +1459,15 @@ def compute_failure_reasons(db, campaign: str = None, campaigns: list = None,
     2026) membatasi ke tiket dalam jendela tanggal yang sama dengan filter di panel
     "AI Status — per waktu" — kontrol yang sama juga dipasang di tab Failure Rate,
     lihat ``compute_stats_snapshot``. Tanggal tiap tiket memakai aturan "chart date"
-    yang sama: TMS ``submit_time``, jatuh balik ke tanggal transkrip."""
+    yang sama (``TicketDates``): sejak 20 Oktober 2026 ``load_date`` App C TERAKHIR,
+    sama dengan filter Results; tiket tanpa baris App C jatuh ke TMS ``submit_time``,
+    lalu tanggal transkrip."""
     done_results = one_result_per_ticket(db, done_results_query(db, campaign, campaigns).all())
     if date_start is not None or date_end is not None:
-        chart_dates = _submit_date_map(db, done_results)
-
-        def _in_window(r):
-            d = chart_dates.get(r.id) or _series_date(r)
-            if d is None:
-                return False
-            if date_start is not None and d < date_start:
-                return False
-            if date_end is not None and d > date_end:
-                return False
-            return True
-
-        done_results = [r for r in done_results if _in_window(r)]
+        tdates = _ticket_dates_map(db, done_results)
+        done_results = [
+            r for r in done_results if tdates[r.id].in_window(date_start, date_end)
+        ]
     result_ids = [r.id for r in done_results]
     eval_by_id: dict = {}
     if result_ids:
@@ -1813,19 +1807,10 @@ def compute_failure_reasons_hierarchy(db, campaign: str = None, campaigns: list 
     """
     done_results = one_result_per_ticket(db, done_results_query(db, campaign, campaigns).all())
     if date_start is not None or date_end is not None:
-        chart_dates = _submit_date_map(db, done_results)
-
-        def _in_window(r):
-            d = chart_dates.get(r.id) or _series_date(r)
-            if d is None:
-                return False
-            if date_start is not None and d < date_start:
-                return False
-            if date_end is not None and d > date_end:
-                return False
-            return True
-
-        done_results = [r for r in done_results if _in_window(r)]
+        tdates = _ticket_dates_map(db, done_results)
+        done_results = [
+            r for r in done_results if tdates[r.id].in_window(date_start, date_end)
+        ]
     result_ids = [r.id for r in done_results]
     eval_by_id: dict = {}
     if result_ids:
@@ -2487,7 +2472,8 @@ def _wib_today() -> date:
 
 def _series_date(r):
     """Calendar date used to place a result on the AI-status chart's x-axis WHEN the
-    ticket has no ``submit_time`` (see ``_submit_date_map`` / ``_chart_date``).
+    ticket has neither an App C ``load_date`` nor a ``submit_time`` (see
+    ``_ticket_dates_map`` / ``_submit_date_map`` / ``_chart_date``).
 
     Prefers the transcript's wall-clock ``generated_at`` (naive/local — used as-is,
     no UTC→WIB shift, so a 22:58 stamp stays on its own day); falls back to the WIB
@@ -2500,7 +2486,8 @@ def _series_date(r):
 def _submit_date_map(db, results) -> dict:
     """Map ``Result.id -> date`` hasil parse ``submit_time`` (tanggal pengajuan
     pencairan). Hanya result yang submit_time-nya terbaca di snapshot reference_data
-    yang muncul. This is the PRIMARY chart x-axis basis, replacing ``generated_at``."""
+    yang muncul. Sejak 20 Oktober 2026 ini hanya CADANGAN tanggal tiket (tiket tanpa
+    ``load_date`` App C, lihat ``TicketDates``); dasar utamanya ``load_date``."""
     # [FIX] Ikut memakai ``_submit_time_map`` (sumber: snapshot reference_data lewat
     # ``crud.cashline_agent_index``) alih-alih query ``tms_cashline`` sendiri — tabel
     # itu sudah tidak terisi, dan menyatukan sumbernya membuat kedua peta tidak mungkin
@@ -2513,29 +2500,75 @@ def _submit_date_map(db, results) -> dict:
     return out
 
 
-def ticket_chart_dates(db, ticket_ids) -> dict:
-    """Map ticket/customer id -> chart date (TMS ``submit_time``, else transcript
-    date) for a given set of ticket ids.
+class TicketDates(NamedTuple):
+    """Tanggal sebuah tiket untuk filter & grafik Statistics (20 Oktober 2026).
+
+    ``loads`` = seluruh ``load_date`` App C tiket itu (``ticket_load_dates``);
+    ``fallback`` = aturan lama (Tanggal Agree -> generated_at -> WIB uploaded_at),
+    dipakai HANYA bila ``loads`` kosong. Sama dengan ``crud._ticket_date_expr`` milik
+    Results: yang dihitung cuma load_date TERAKHIR, load sebelumnya diabaikan —
+    satu tiket satu tanggal, jadi Results & Statistics memilih tiket yang sama untuk
+    rentang yang sama."""
+
+    loads: tuple
+    fallback: "date | None"
+
+    def single(self) -> "date | None":
+        return max(self.loads) if self.loads else self.fallback
+
+    def in_window(self, start: "date | None", end: "date | None") -> bool:
+        d = self.single()
+        if d is None:
+            return False
+        if start is not None and d < start:
+            return False
+        if end is not None and d > end:
+            return False
+        return True
+
+
+def _ticket_dates_map(db, results) -> dict:
+    """``Result.id -> TicketDates`` untuk setiap result. Satu query
+    ``load_dates_by_ticket`` + satu baca indeks submit_time untuk seluruh daftar —
+    bukan per tiket. Cadangannya persis aturan lama ``_submit_date_map`` +
+    ``_series_date``."""
+    cid_by_rid = {r.id: (_customer_id(r.source_files) or "").strip() for r in results}
+    loads = crud.load_dates_by_ticket(db, [c for c in cid_by_rid.values() if c])
+    submit_dates = _submit_date_map(db, results)
+    return {
+        r.id: TicketDates(
+            tuple(loads.get(cid_by_rid[r.id], ())),
+            submit_dates.get(r.id) or _series_date(r),
+        )
+        for r in results
+    }
+
+
+def ticket_date_windows(db, ticket_ids) -> dict:
+    """Map ticket/customer id -> ``TicketDates`` untuk sekumpulan ticket id.
 
     ``crud.qc_performance_rows`` keys its tickets by the customer id directly
     (``QcAssignment.ticket_id``) rather than by ``Result.id``, so it can't reuse
-    ``_submit_date_map`` (which is keyed the other way round) — this is that same
+    ``_ticket_dates_map`` (which is keyed the other way round) — this is that same
     "kapan sebuah tiket terjadi" rule, just addressed by ticket id, so the QC
-    Productivity table's date filter agrees with the Hierarki Failure Rate tree's
-    (both ultimately call ``_series_date``/TMS submit_time)."""
+    Productivity table's date filter agrees with the Hierarki Failure Rate tree's.
+    Sejak 20 Oktober 2026 dasarnya ``load_date`` App C terakhir; cadangannya (tiket
+    tanpa baris App C) tetap TMS submit_time, lalu tanggal transkrip. Tiket tanpa
+    tanggal apa pun tidak muncul."""
     ids = {str(t).strip() for t in (ticket_ids or ()) if str(t).strip()}
     if not ids:
         return {}
+    loads = crud.load_dates_by_ticket(db, ids)
     # submit_time dari snapshot reference_data (``crud.cashline_agent_index``),
     # sumber yang sama dengan ``_submit_time_map`` — BUKAN tabel ``tms_cashline``
     # seperti di monolit, yang tidak terisi lagi sejak reference data pindah ke DWH.
     index = crud.cashline_agent_index(db)
-    out: dict = {}
+    fallback: dict = {}
     for tid in ids:
         d = _parse_submit_date((index.get(tid) or {}).get("submit_time"))
         if d is not None:
-            out[tid] = d
-    missing = ids - set(out)
+            fallback[tid] = d
+    missing = ids - set(fallback)
     if missing:
         prefix = func.split_part(Result.source_files[0].astext, "_", 1)
         for r in (
@@ -2544,11 +2577,25 @@ def ticket_chart_dates(db, ticket_ids) -> dict:
             .all()
         ):
             cid = _customer_id(r.source_files)
-            if cid and cid in missing and cid not in out:
+            if cid and cid in missing and cid not in fallback:
                 d = _series_date(r)
                 if d is not None:
-                    out[cid] = d
-    return out
+                    fallback[cid] = d
+    return {
+        tid: TicketDates(tuple(loads.get(tid, ())), fallback.get(tid))
+        for tid in ids
+        if loads.get(tid) or fallback.get(tid) is not None
+    }
+
+
+def ticket_chart_dates(db, ticket_ids) -> dict:
+    """Map ticket/customer id -> chart date (``TicketDates.single()``: load_date App C
+    terakhir, else TMS ``submit_time``, else transcript date) — lihat
+    ``ticket_date_windows``."""
+    return {
+        tid: d for tid, td in ticket_date_windows(db, ticket_ids).items()
+        if (d := td.single()) is not None
+    }
 
 
 def _parse_ymd(value):
@@ -2737,13 +2784,13 @@ def compute_ai_status_timeseries(db, customer_ids, campaign, granularity, start,
         results = [r for r in results if str(r.campaign or "").strip().lower() == want]
     results = one_result_per_ticket(db, results)
 
-    # Chart x-axis date = ``submit_time`` (disbursement submission date); fall
-    # back to the transcript date (generated_at, else uploaded_at) only when a ticket
-    # has no submit_time in the reference-data snapshot.
-    submit_dates = _submit_date_map(db, results)
+    # Chart x-axis date = ``load_date`` App C TERAKHIR (20 Oktober 2026, sama dengan
+    # filter Results); tiket tanpa baris App C jatuh ke ``submit_time`` (Tanggal
+    # Agree), lalu tanggal transkrip (generated_at, else uploaded_at).
+    tdates = _ticket_dates_map(db, results)
 
     def _chart_date(r):
-        return submit_dates.get(r.id) or _series_date(r)
+        return tdates[r.id].single()
 
     # Anchor the default window to the latest chart date in scope (the newest
     # _chart_date across the selected results), so the last bucket always carries
@@ -2769,8 +2816,8 @@ def compute_ai_status_timeseries(db, customer_ids, campaign, granularity, start,
     if start_d > end_d:
         start_d, end_d = end_d, start_d
 
-    # keep only results whose chart date (submit_time, else transcript date)
-    # is inside the window
+    # keep only results whose chart date (``_chart_date``: load_date App C terakhir,
+    # else submit_time, else transcript date) is inside the window
     in_range = []
     for r in results:
         d = _chart_date(r)
@@ -3348,10 +3395,11 @@ def compute_stats_snapshot(db, customer_ids=None, roster_uids=None,
     tiket yang dipindai ke jendela tanggal tertentu — dipakai tab "Failure Rate"
     (pohon Hierarki + Daftar Productivity QC) supaya kedua tabel itu ikut
     mengikuti filter tanggal yang sama dengan grafik AI Status. Tanggalnya adalah
-    "chart date" yang SAMA dengan ``compute_ai_status_timeseries``: TMS
-    ``submit_time``, jatuh balik ke tanggal transkrip bila tiket tidak punya baris
-    cashline — supaya kedua fitur menghitung "kapan" satu tiket dengan aturan yang
-    identik. ``None``/``None`` (default) = tanpa batas tanggal, inilah snapshot
+    "chart date" yang SAMA dengan ``compute_ai_status_timeseries`` (``TicketDates``):
+    ``load_date`` App C TERAKHIR sejak 20 Oktober 2026, jatuh balik ke TMS
+    ``submit_time`` lalu tanggal transkrip bila tiket tidak punya baris App C —
+    supaya kedua fitur (dan menu Results) menghitung "kapan" satu tiket dengan aturan
+    yang identik. ``None``/``None`` (default) = tanpa batas tanggal, inilah snapshot
     harian yang di-cache global.
     """
     base = crud.get_stats(db)  # total_uploaded / pending / processing / done / failed / active_campaigns
@@ -3390,24 +3438,15 @@ def compute_stats_snapshot(db, customer_ids=None, roster_uids=None,
         base = {**base, **counts, "total_uploaded": len(statuses)}
 
     if date_start is not None or date_end is not None:
-        # Sama seperti ``compute_ai_status_timeseries``: TMS submit_time dulu,
-        # jatuh balik ke tanggal transkrip. ``base``/status counts di atas SENGAJA
-        # tidak ikut diperiksa ulang di sini — dua field itu tidak dipakai tab
-        # Failure Rate (satu-satunya pemanggil jendela tanggal ini), jadi tetap
-        # global agar tidak menghitung dua kali tanpa manfaat.
-        chart_dates = _submit_date_map(db, done_results)
-
-        def _in_window(r):
-            d = chart_dates.get(r.id) or _series_date(r)
-            if d is None:
-                return False
-            if date_start is not None and d < date_start:
-                return False
-            if date_end is not None and d > date_end:
-                return False
-            return True
-
-        done_results = [r for r in done_results if _in_window(r)]
+        # Sama seperti ``compute_ai_status_timeseries``: load_date App C terakhir,
+        # jatuh balik ke TMS submit_time lalu tanggal transkrip. ``base``/status
+        # counts di atas SENGAJA tidak ikut diperiksa ulang di sini — dua field itu
+        # tidak dipakai tab Failure Rate (satu-satunya pemanggil jendela tanggal
+        # ini), jadi tetap global agar tidak menghitung dua kali tanpa manfaat.
+        tdates = _ticket_dates_map(db, done_results)
+        done_results = [
+            r for r in done_results if tdates[r.id].in_window(date_start, date_end)
+        ]
 
     result_ids = [r.id for r in done_results]
 

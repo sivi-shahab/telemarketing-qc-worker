@@ -33,6 +33,7 @@ celery_app = Celery(
         "worker.tasks.maintenance",
         "worker.tasks.auto_assign",
         "worker.tasks.reference_retry",
+        "worker.tasks.load_date_sync",
     ],
 )
 
@@ -111,6 +112,14 @@ celery_app.conf.update(
         "retry-reference-gaps": {
             "task": "worker.tasks.reference_retry.retry_reference_gaps",
             "schedule": crontab(minute="*/30"),
+            "options": {"expires": 25 * 60},
+        },
+        # Sinkron load_date App C (20 Oktober 2026): tiket 3 hari terakhir disalin ke
+        # ticket_load_dates tiap 30 menit (xx.05 & xx.35 WIB, digeser dari retry
+        # data acuan) untuk filter tanggal Results/Stats — lihat tasks/load_date_sync.py.
+        "sync-ticket-load-dates": {
+            "task": "worker.tasks.load_date_sync.sync_ticket_load_dates",
+            "schedule": crontab(minute="5,35"),
             "options": {"expires": 25 * 60},
         },
     },
