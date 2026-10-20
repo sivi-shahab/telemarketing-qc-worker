@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Column, String, Float, Boolean, Text, DateTime, Integer, ForeignKey, UniqueConstraint
+from sqlalchemy import Column, String, Float, Boolean, Text, DateTime, Date, Integer, ForeignKey, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.sql import func
@@ -595,6 +595,25 @@ class QcAssignmentEvent(Base):
     # manual | auto | scheduler | lepas | lepas_semua | user_deleted | qc_nonaktif
     source = Column(String(20), nullable=False)
     created_at = Column(DateTime, server_default=func.now(), index=True)
+
+
+class TicketLoadDate(Base):
+    """Tanggal ``load_date`` App C per tiket (20 Oktober 2026).
+
+    Filter tanggal Results & Stats pindah ke ``load_date`` App C — hari tiket itu
+    dimuat ke antrean — bukan lagi Tanggal Agree. Satu tiket bisa dimuat ulang di
+    hari lain, jadi kuncinya (ticket_id, load_date); yang dipakai filter adalah
+    load_date TERAKHIR. ``ticket_id`` = prefix sebelum ``_`` pada source file
+    pertama (sama dengan ``QcAssignment.ticket_id``), hanya di-strip, tanpa casefold.
+    Tanpa FK ke ``results``: baris diisi dari App C dan harus bertahan walau hasilnya
+    dihapus/diproses ulang.
+    """
+    __tablename__ = "ticket_load_dates"
+
+    ticket_id = Column(String(100), primary_key=True)
+    load_date = Column(Date, primary_key=True, index=True)
+    campaign = Column(String(100), nullable=True)
+    synced_at = Column(DateTime, server_default=func.now(), nullable=False)
 
 
 class QcStatusEvent(Base):
