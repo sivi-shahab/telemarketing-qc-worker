@@ -21,17 +21,14 @@ Satu task = satu unique ticket id = satu ``ReprocessJobItem``. Alurnya per tiket
   6. bila gagal: row baru dibuang dan row LAMA dipertahankan apa adanya — sebuah
      ticket id tidak pernah berakhir tanpa hasil sama sekali
 
-Hasil evaluasi baru sengaja BERSIH: banding error code, usulan/approval Manual
-Status, dan dokumen pendukung milik row lama TIDAK ikut disalin (keputusan 20
-Agustus 2026). Alasannya, error code hasil evaluasi baru bisa berbeda total dari
-yang dibandingkan dulu. Ini perilaku yang sama dengan mode "⟳ Proses ulang (LLM)"
-di menu Upload Transcript.
-
-PENGECUALIAN (19 Oktober 2026): job dari retry data acuan
-(``crud.REFERENCE_RETRY_USERNAME``) membawa Manual Status, riwayatnya, cek manual,
-dan dokumen row lama ke row baru (``crud.carry_over_qc_work``). Tiket seperti itu
-belum pernah dinilai LLM, jadi tidak ada error code lama yang bisa berbeda — yang
-ada hanya pekerjaan QC yang tidak boleh hilang.
+Reproses HANYA mengganti hasil AI (21 Oktober 2026, menggantikan keputusan 20
+Agustus 2026 yang membuat hasilnya bersih): pekerjaan QC milik row lama — banding
+error code, usulan/approval Manual Status beserta riwayatnya, cek manual, dan
+dokumen pendukung — dipindah ke row baru (``crud.carry_over_qc_work``) sebelum row
+lama dihapus. Berlaku untuk semua pintu masuk, termasuk retry data acuan
+(``crud.REFERENCE_RETRY_USERNAME``, yang lebih dulu membawanya sejak 19 Oktober).
+Banding yang error code-nya tidak muncul lagi di evaluasi baru tetap tersimpan
+sebagai riwayat, tanpa efek ke skor.
 
 Berkas transkrip & JSON hasil milik row lama TIDAK dihapus dari MinIO, sama seperti
 tombol Delete tiket yang sudah ada (``/delete_ticket``) — yang dihapus hanya
@@ -185,13 +182,14 @@ def reprocess_ticket(item_id: int):
             logger.warning("reprocess item %s di-kill; row baru %s dibuang", item_id, new_result_id)
             return {"item_id": item_id, "status": "killed"}
 
-        # Retry data acuan (19 Oktober 2026): pekerjaan QC row lama dibawa ke row baru
-        # SEBELUM row lama dihapus, supaya hasilnya gabungan penilaian AI baru +
-        # pekerjaan QC lama. Tombol Reprocess manual tetap bersih (keputusan 20 Agustus).
-        if getattr(job, "created_by_username", None) == REFERENCE_RETRY_USERNAME:
-            carried = crud.carry_over_qc_work(db, item.old_result_ids, new_result_id)
-            logger.info("reprocess item %s (retry data acuan): pekerjaan QC dibawa %s",
-                        item_id, carried)
+        # Pekerjaan QC row lama dibawa ke row baru SEBELUM row lama dihapus, supaya
+        # hasilnya gabungan penilaian AI baru + pekerjaan QC lama (semua job sejak 21
+        # Oktober 2026; sebelumnya hanya retry data acuan).
+        carried = crud.carry_over_qc_work(db, item.old_result_ids, new_result_id)
+        source = ("retry data acuan"
+                  if getattr(job, "created_by_username", None) == REFERENCE_RETRY_USERNAME
+                  else "reproses")
+        logger.info("reprocess item %s (%s): pekerjaan QC dibawa %s", item_id, source, carried)
 
         # Row lama dibuang HANYA setelah row barunya jadi. Yang dihapus persis id
         # yang dibekukan saat job dibuat — upload yang masuk di tengah job tidak

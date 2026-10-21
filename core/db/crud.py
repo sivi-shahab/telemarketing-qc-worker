@@ -2362,13 +2362,13 @@ def reference_gap_retry_plan(db: Session, since: datetime) -> list[dict]:
       Collection) tidak ikut — definisinya sama dengan ``reference_snapshot_index``;
     * tidak sedang direproses (``_reprocess_item_active_clause``);
     * tidak punya vonis Manual Status yang sudah FINAL (``effective_appeal_status``
-      = approved). Reproses membuat row bersih dan menghapus row lama, jadi vonis
-      itu ikut hilang — keputusan manusia yang sudah disetujui tidak boleh dibuang
-      oleh jadwal otomatis. Pengajuan yang masih pending atau ditolak TIDAK
-      menghalangi (19 Oktober 2026, tiket 130309XxVf): QC bisa mengajukan PASS untuk
-      tiket yang belum pernah dinilai LLM, dan pengajuan itu tidak boleh menahan
-      tiketnya di PENDING tanpa skor selamanya. Pengajuannya ikut hilang bersama
-      row lama; QC mengajukan ulang setelah melihat hasil penilaian.
+      = approved). Vonis final manusia sudah menentukan status tiketnya, jadi jadwal
+      otomatis tidak perlu memanggil LLM lagi (dipertahankan 21 Oktober 2026 walau
+      reproses kini membawa pekerjaan QC, ``carry_over_qc_work``). Pengajuan yang
+      masih pending atau ditolak TIDAK menghalangi (19 Oktober 2026, tiket
+      130309XxVf): QC bisa mengajukan PASS untuk tiket yang belum pernah dinilai LLM,
+      dan pengajuan itu tidak boleh menahan tiketnya di PENDING tanpa skor
+      selamanya. Pengajuannya ikut dibawa ke row baru.
 
     Agent tidak terpetakan TIDAK ikut: itu bukan data yang dicari ulang ke DWH.
 
@@ -4095,9 +4095,9 @@ def finish_reprocess_job_if_complete(db: Session, job_id: str) -> Optional[Repro
     return job
 
 
-# Pembuat job reproses retry data acuan (``worker.tasks.reference_retry``). Job dari
-# pembuat ini MEMBAWA pekerjaan QC ke row barunya (``carry_over_qc_work``); tombol
-# Reprocess manual tetap menghasilkan row bersih.
+# Pembuat job reproses retry data acuan (``worker.tasks.reference_retry``). Sejak 21
+# Oktober 2026 SEMUA job reproses membawa pekerjaan QC ke row barunya
+# (``carry_over_qc_work``); nama ini kini hanya membedakan asal job di log/riwayat.
 REFERENCE_RETRY_USERNAME = "system:retry-data-acuan"
 
 
@@ -4105,23 +4105,27 @@ def carry_over_qc_work(db: Session, old_result_ids, new_result_id) -> dict:
     """Pindahkan pekerjaan QC dari row lama sebuah tiket ke row barunya, SEBELUM row
     lama dihapus (yang tanpa ini ikut terhapus lewat ON DELETE CASCADE).
 
-    Dipakai reproses retry data acuan (19 Oktober 2026, tiket 130309XxVf: pengajuan
-    Manual Status PASS ikut hilang saat tiketnya akhirnya dinilai). Hasil akhirnya
-    gabungan: penilaian AI yang BARU + pekerjaan QC yang LAMA.
+    Dipakai SEMUA reproses (``worker.tasks.reprocess_ticket``): mula-mula hanya retry
+    data acuan (19 Oktober 2026, tiket 130309XxVf: pengajuan Manual Status PASS ikut
+    hilang saat tiketnya akhirnya dinilai), sejak 21 Oktober 2026 juga tombol
+    Reprocess dan Reprocess All Ticket — reproses hanya mengganti hasil AI. Hasil
+    akhirnya gabungan: penilaian AI yang BARU + pekerjaan QC yang LAMA.
 
     * ``qc_status_requests``: satu per result (unik), jadi yang dibawa hanya yang
       TERBARU (``requested_at``); bila row baru sudah punya, tidak ada yang dibawa.
-    * ``qc_status_events``, ``qc_manual_checks``, ``documents``: semua dibawa, kecuali
-      salinan kembar — duplikat JOB-3 menyalin baris yang sama ke tiap row, dan tanpa
-      saringan riwayatnya akan berlipat.
-    * ``error_code_appeals`` TIDAK dibawa: banding menunjuk error code evaluasi lama,
-      yang belum tentu ada di evaluasi baru.
+    * ``qc_status_events``, ``qc_manual_checks``, ``documents``,
+      ``error_code_appeals``: semua dibawa, kecuali salinan kembar — duplikat JOB-3
+      menyalin baris yang sama ke tiap row, dan tanpa saringan riwayatnya akan
+      berlipat. Banding dibawa APA ADANYA (21 Oktober 2026): banding yang error
+      code-nya tidak muncul lagi di evaluasi baru tetap tersimpan sebagai riwayat dan
+      tidak berefek ke skor (``relabel_error_table`` hanya menyentuh baris yang ada).
 
     Satu commit. Mengembalikan jumlah baris yang dipindah per tabel.
     """
     old = [uuid.UUID(str(r)) for r in (old_result_ids or []) if str(r) != str(new_result_id)]
     new = uuid.UUID(str(new_result_id))
-    moved = {"status_request": 0, "status_events": 0, "manual_checks": 0, "documents": 0}
+    moved = {"status_request": 0, "status_events": 0, "manual_checks": 0, "documents": 0,
+             "appeals": 0}
     if not old:
         return moved
 
@@ -4153,6 +4157,9 @@ def carry_over_qc_work(db: Session, old_result_ids, new_result_id) -> dict:
           "status_events")
     _move(QcManualCheck, lambda r: (r.checked_by_username, r.note, r.created_at), "manual_checks")
     _move(Document, lambda r: (r.doc_type, r.object_path or r.filename), "documents")
+    _move(ErrorCodeAppeal, lambda r: (r.error_code, r.item_code, r.appeal_kind,
+                                      r.qc_new_error_code, r.qc_reason,
+                                      r.requested_by_username, r.requested_at), "appeals")
     db.commit()
     return moved
 

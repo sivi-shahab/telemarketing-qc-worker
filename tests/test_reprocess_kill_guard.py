@@ -47,6 +47,9 @@ class FakeCrud:
         self.deleted.append(list(ids))
         return len(ids)
 
+    def carry_over_qc_work(self, db, old_result_ids, new_result_id):
+        return {}
+
     def finish_reprocess_job_if_complete(self, db, job_id):
         return None
 
@@ -100,16 +103,14 @@ def test_item_normal_tetap_menghapus_row_lama(run):
     assert fake.item.status == "done"
 
 
-# --- Retry data acuan membawa pekerjaan QC (19 Oktober 2026) -------------------
+# --- Reproses membawa pekerjaan QC (19 Oktober 2026; semua job sejak 21 Oktober) --
 
-@pytest.mark.parametrize("creator, carried", [
-    ("system:retry-data-acuan", True),
-    ("admin1", False),
-])
-def test_hanya_job_retry_yang_membawa_pekerjaan_qc(monkeypatch, creator, carried):
+@pytest.mark.parametrize("creator", ["system:retry-data-acuan", "admin1"])
+def test_semua_job_membawa_pekerjaan_qc(monkeypatch, creator):
     """130309XxVf: pengajuan Manual Status PASS ikut terhapus saat retry mereproses
-    tiketnya. Job retry kini membawa pekerjaan QC ke row baru SEBELUM row lama
-    dihapus; tombol Reprocess manual tetap bersih."""
+    tiketnya. Sejak 21 Oktober 2026 SEMUA reproses (retry maupun tombol Reprocess /
+    Reprocess All Ticket) hanya mengganti hasil AI: pekerjaan QC dibawa ke row baru
+    SEBELUM row lama dihapus."""
     from worker.tasks import reprocess_ticket as mod
 
     fake = FakeCrud(killed_after_eval=False)
@@ -135,8 +136,5 @@ def test_hanya_job_retry_yang_membawa_pekerjaan_qc(monkeypatch, creator, carried
     out = mod.reprocess_ticket.run(7)
 
     assert out["status"] == "done"
-    if carried:
-        assert order == [("carry", ["old-1"], "new-1"), ("delete", ["old-1"])]
-    else:
-        assert order == [("delete", ["old-1"])]
+    assert order == [("carry", ["old-1"], "new-1"), ("delete", ["old-1"])]
 
