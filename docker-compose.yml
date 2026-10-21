@@ -29,6 +29,13 @@ services:
     <<: *worker-image
     command: celery -A worker.celery_app worker --loglevel=info --concurrency=${CELERY_CONCURRENCY:-8}
 
+  # Hitung ulang snapshot Statistics (antrean ``stats``, 21 Oktober 2026) — terpisah
+  # dari `worker` supaya evaluasi LLM yang memenuhi semua slot tidak menahannya.
+  # `worker` sendiri hanya mengambil antrean bawaan (``celery``).
+  worker-stats:
+    <<: *worker-image
+    command: celery -A worker.celery_app worker -Q stats --concurrency=1 -n stats@%h --loglevel=info
+
   # Penjadwal periodik (beat_schedule di worker/celery_app.py) — cukup SATU
   # replika. Ia hanya mengirim task ke antrean; yang mengerjakan tetap `worker`.
   beat:

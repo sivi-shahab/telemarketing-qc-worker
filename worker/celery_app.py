@@ -71,6 +71,14 @@ celery_app.conf.update(
     # menulis started_at baru. crud.STALE_PROCESSING_AFTER + interval beat harus
     # di bawah angka ini (dijaga tests/test_stale_processing_reaper.py).
     broker_transport_options={"visibility_timeout": 3600},
+    # Statistics punya antrean sendiri (21 Oktober 2026, tiket 0704449OzZ): di antrean
+    # bawaan, hitung ulang snapshot antre di belakang evaluasi LLM yang bisa ~5 menit
+    # per tiket, sehingga vonis TL QC baru tampil di Statistics menit-menit kemudian.
+    # Dikerjakan service ``worker-stats`` (docker-compose.yml, concurrency 1); API
+    # mengirim ke antrean yang sama setiap vonis/dokumen berubah (api/stats_refresh.py).
+    task_routes={
+        "worker.tasks.maintenance.refresh_stats_snapshot": {"queue": "stats"},
+    },
     # Dijalankan oleh service `beat` di docker-compose.yml (28 September 2026).
     # Idempoten dan memakai SKIP LOCKED, jadi aman walau ada lebih dari satu beat
     # yang mengarah ke DB yang sama.
@@ -86,6 +94,9 @@ celery_app.conf.update(
         "refresh-stats-snapshot": {
             "task": "worker.tasks.maintenance.refresh_stats_snapshot",
             "schedule": 120.0,
+            # Antrean ``stats`` (lihat task_routes). Bila worker-stats mati, pesan yang
+            # lewat jadwal dibuang alih-alih menumpuk.
+            "options": {"expires": 110},
         },
         # Nonaktif QC dari Kelola QC (Team Leader QC) berlaku sampai 00.00 WIB; cek
         # tiap 2 menit supaya QC aktif kembali paling lambat 00.02 WIB, jauh sebelum
