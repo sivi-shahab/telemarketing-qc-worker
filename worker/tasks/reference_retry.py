@@ -14,8 +14,8 @@ Tiap ``INTERVAL_MIN`` menit (beat, lihat ``celery_app``):
   2. tanyakan ulang DWH per tiket (``data_dwh.fetch_bundle_checked``; worker tidak
      membaca cache Redis, jadi jawabannya segar);
   3. bila CASHLINE dan CARD HOLDER kini KEDUANYA ada, kirim job reproses
-     ``scope="ticket"`` — alur yang sama dengan tombol Reprocess di Results, BEDANYA
-     pekerjaan QC row lama (Manual Status, riwayat, cek manual, dokumen) dibawa ke row
+     ``scope="ticket"`` — alur yang sama dengan tombol Reprocess di Results: pekerjaan
+     QC row lama (banding, Manual Status, riwayat, cek manual, dokumen) dibawa ke row
      baru (``crud.carry_over_qc_work``). Satu sisi saja belum cukup: gerbangnya akan
      memPENDING-kan tiket itu lagi;
   4. catat ringkasan putaran di ``app_settings`` (dibaca halaman Results).
