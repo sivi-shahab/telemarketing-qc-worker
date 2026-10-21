@@ -121,6 +121,15 @@ def _cashline_ids_missing(bundle: dict) -> bool:
     return isinstance(cashline, dict) and any(f not in cashline for f in _CASHLINE_ID_FIELDS)
 
 
+# [21 Oktober 2026] Cache App A juga menyimpan baris dengan cashline terisi tetapi
+# ``customer`` null, dan TIDAK memperbaruinya setelah card holder masuk DWH: 7 dari 9
+# tiket PENDING "Data Ascend Kosong" sudah punya card holder di endpoint asli, sementara
+# retry data acuan terus melaporkannya kosong. Ikut di bawah flag yang sama.
+def _customer_missing(bundle: dict) -> bool:
+    bundle = bundle or {}
+    return isinstance(bundle.get("cashline"), dict) and bundle.get("customer") is None
+
+
 def set_redis_read(enabled: bool) -> None:
     """False untuk worker evaluasi: jangan BACA L2 (selalu segar), tetap TULIS."""
     global _REDIS_READ
@@ -166,7 +175,10 @@ def _redis_get(result_id: str) -> Optional[dict]:
 
 
 def _redis_put(result_id: str, bundle: dict) -> None:
-    found = bundle.get("cashline") is not None or bundle.get("customer") is not None
+    # [21 Oktober 2026] Hanya bundle LENGKAP yang ditahan 30 hari. Cashline tanpa
+    # card holder bisa saja cache App A yang basi (lihat _customer_missing) atau card
+    # holder yang belum masuk DWH -- keduanya bisa berubah, jadi pakai TTL negatif.
+    found = bundle.get("cashline") is not None and bundle.get("customer") is not None
     try:
         client = _redis_client()
         if client is not None:
@@ -270,13 +282,15 @@ def fetch_bundle_checked(result_id: str) -> tuple[dict, bool]:
     # --- 1. Coba endpoint CACHE (database App A, cepat) dulu ---
     cache_url = DWH_API_BASE_URL + _API_PATH_CACHE.format(result_id=rid)
     bundle, status = _fetch_from_url(cache_url)
-    if bundle is not None and _FILL_CASHLINE_IDS and _cashline_ids_missing(bundle):
-        # Baris cache App A versi lama -- lengkapi dari endpoint asli. Kalau endpoint
-        # asli gagal, tetap pakai isi cache: tidak lebih buruk dari sebelumnya.
+    if bundle is not None and _FILL_CASHLINE_IDS and (
+            _cashline_ids_missing(bundle) or _customer_missing(bundle)):
+        # Baris cache App A versi lama / card holder basi -- lengkapi dari endpoint
+        # asli. Kalau endpoint asli gagal, tetap pakai isi cache: tidak lebih buruk
+        # dari sebelumnya.
         original, _ = _fetch_from_url(DWH_API_BASE_URL + _API_PATH_ORIGINAL.format(result_id=rid))
         if original is not None and not _cashline_ids_missing(original):
             bundle = original
-        else:
+        elif _cashline_ids_missing(bundle):
             logger.warning("[data-dwh] cache result_id=%s tanpa agent_id/submit_time, "
                            "endpoint asli tidak melengkapinya -- pakai isi cache", rid)
     if bundle is not None:
