@@ -1343,7 +1343,8 @@ def _stats_signature(db: Session) -> str:
     error counts), Manual Status count + latest request/review time (an approved
     human verdict locks the AI Status and picks the ticket's representative row),
     and the active sales-database file (drives agent name / TL / AM), plus
-    ``ticket_load_dates`` count + latest load_date (drives each ticket's date).
+    ``ticket_load_dates`` count + latest load_date (drives each ticket's date), plus
+    supporting documents count + latest upload/OCR time (PENDING "Menunggu dokumen").
 
     Review time = BOTH tiers: Team Leader QC finalizes on its own and only writes
     ``tl_qc_reviewed_at`` — with ``reviewed_at`` (SPQ Head) alone a TL QC decision
@@ -1374,6 +1375,11 @@ def _stats_signature(db: Session) -> str:
     ld_count, ld_max = db.query(
         func.count(), func.max(TicketLoadDate.load_date)
     ).select_from(TicketLoadDate).one()
+    # Dokumen pendukung (21 Oktober 2026): unggahan & selesainya OCR menentukan
+    # PENDING "Menunggu dokumen" vs status akhir tiket. Count menangkap hapus/cascade.
+    doc_count, doc_up, doc_done = db.query(
+        func.count(Document.id), func.max(Document.created_at), func.max(Document.completed_at)
+    ).one()
     sales = get_active_sales_database(db)
     sales_key = sales.object_path if sales else ""
     # Bump when the snapshot PAYLOAD SHAPE or COMPUTED VALUES change so old cached
@@ -1473,7 +1479,10 @@ def _stats_signature(db: Session) -> str:
     #      gugur. Tenggat H+2 tetap Tanggal Agree. Sidik jari juga ikut
     #      ``ticket_load_dates`` (count + max load_date) supaya load_date baru dari
     #      sync langsung menggugurkan snapshot, sama cepatnya dengan Results.
-    version = "v31"
+    # v32: sidik jari ikut dokumen pendukung (count + max created_at/completed_at,
+    #      21 Okt 2026) — unggahan dokumen menggeser PENDING ke status akhir tanpa
+    #      mengubah data lain, jadi Statistics tertinggal dari Results.
+    version = "v32"
     sla = "1" if get_doc_sla_enabled(db) else "0"
     # Sidik jari daftar tersembunyi. WAJIB ikut: tanpa ini snapshot yang sudah
     # ter-cache akan terus menyajikan angka tiket yang baru disembunyikan sampai ada
@@ -1488,7 +1497,7 @@ def _stats_signature(db: Session) -> str:
         f"{version}|{res_count}|{res_up}|{res_done}|{rd_count}|{rd_max}"
         f"|{ap_count}|{ap_rev}|{ap_tl}|qs{qs_count}|{qs_req}|{qs_tl}|{qs_rev}"
         f"|{sales_key}|sla{sla}|hid{hidden_key}|col{collection_key}"
-        f"|ld{ld_count}|{ld_max}"
+        f"|ld{ld_count}|{ld_max}|doc{doc_count}|{doc_up}|{doc_done}"
     )
 
 
