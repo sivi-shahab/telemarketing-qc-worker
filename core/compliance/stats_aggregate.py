@@ -1459,9 +1459,8 @@ def compute_failure_reasons(db, campaign: str = None, campaigns: list = None,
     2026) membatasi ke tiket dalam jendela tanggal yang sama dengan filter di panel
     "AI Status — per waktu" — kontrol yang sama juga dipasang di tab Failure Rate,
     lihat ``compute_stats_snapshot``. Tanggal tiap tiket memakai aturan "chart date"
-    yang sama (``TicketDates``): sejak 20 Oktober 2026 ``load_date`` App C TERAKHIR,
-    sama dengan filter Results; tiket tanpa baris App C jatuh ke TMS ``submit_time``,
-    lalu tanggal transkrip."""
+    yang sama (``TicketDates``): TMS ``submit_time`` (Tanggal Submit), sama dengan
+    filter Results, lalu tanggal transkrip."""
     done_results = one_result_per_ticket(db, done_results_query(db, campaign, campaigns).all())
     if date_start is not None or date_end is not None:
         tdates = _ticket_dates_map(db, done_results)
@@ -2020,16 +2019,47 @@ def _transcript_cell(v: dict):
     return v.get("extracted_value")
 
 
-def _iter_export_tickets(db, campaign: str = None, campaigns: list = None):
-    """Hasilkan ``(result, ticket_id, evaluasi, ai_status)`` untuk tiket ``done`` yang
-    AI Status-nya Not Qualified (FAIL) atau PENDING — cakupan SEMUA export agregat.
+def _tanggal_submit_cell(r, submit_time):
+    """Isi kolom "Tanggal Submit" export: ``submit_time`` TMS apa adanya, lalu
+    ``generated_at``, lalu WIB ``uploaded_at`` — urutan yang sama dengan tanggal
+    tiket di filter Results (``crud._series_date_expr``), supaya setiap baris file
+    jatuh di rentang yang diminta."""
+    if (submit_time or "").strip():
+        return submit_time.strip()
+    if getattr(r, "generated_at", None) is not None:
+        return r.generated_at.isoformat(sep=" ", timespec="seconds")
+    if getattr(r, "uploaded_at", None) is not None:
+        wib = r.uploaded_at.replace(tzinfo=timezone.utc).astimezone(_WIB)
+        return wib.replace(tzinfo=None).isoformat(sep=" ", timespec="seconds")
+    return None
+
+
+def _in_date_window(db, results, date_start=None, date_end=None) -> list:
+    """``results`` yang tanggal tiketnya (``TicketDates``, = filter Results) ada di
+    rentang. Tanpa batas apa pun daftarnya dikembalikan utuh tanpa membaca tanggal."""
+    if date_start is None and date_end is None:
+        return list(results)
+    tdates = _ticket_dates_map(db, results)
+    return [r for r in results if tdates[r.id].in_window(date_start, date_end)]
+
+
+def _iter_export_tickets(db, campaign: str = None, campaigns: list = None,
+                         date_start=None, date_end=None):
+    """Hasilkan ``(result, ticket_id, evaluasi, ai_status, tanggal_submit)`` untuk
+    tiket ``done`` yang AI Status-nya Not Qualified (FAIL) atau PENDING — cakupan
+    SEMUA export agregat.
 
     Dipisah supaya export per kategori verifikasi dan export per fase percakapan
     memakai penyaring tiket yang IDENTIK; kalau cakupannya diubah, keduanya ikut.
     Evaluasinya sudah menerapkan banding yang di-approve (``_adjusted_evaluation``),
     sama seperti tampilan dashboard.
+
+    ``date_start``/``date_end`` (26 Oktober 2026) = filter tanggal menu Results,
+    dengan tanggal tiket yang sama (Tanggal Submit). Sebelumnya export agregat
+    selalu menarik SELURUH periode, apa pun rentang yang sedang dipilih di layar.
     """
-    done_results = one_result_per_ticket(db, done_results_query(db, campaign, campaigns).all())
+    done_results = one_result_per_ticket(db, _in_date_window(
+        db, done_results_query(db, campaign, campaigns).all(), date_start, date_end))
     result_ids = [r.id for r in done_results]
     eval_by_id: dict = {}
     if result_ids:
@@ -2064,11 +2094,13 @@ def _iter_export_tickets(db, campaign: str = None, campaigns: list = None):
         )
         if ai not in _VERIF_EXPORT_STATUSES:
             continue
-        yield r, _customer_id(r.source_files) or rid, ev, ai
+        yield (r, _customer_id(r.source_files) or rid, ev, ai,
+               _tanggal_submit_cell(r, submit_times.get(r.id)))
 
 
 def compute_verification_export(db, category: str, campaign: str = None,
-                                campaigns: list = None) -> dict:
+                                campaigns: list = None, date_start=None,
+                                date_end=None) -> dict:
     """Baris export untuk SATU kategori verifikasi.
 
     Cakupannya: tiket ``done`` yang AI Status-nya Not Qualified (FAIL) atau PENDING —
@@ -2091,7 +2123,8 @@ def compute_verification_export(db, category: str, campaign: str = None,
 
     fields = conf["fields"]
     rows = []
-    for r, ticket_id, ev, ai in _iter_export_tickets(db, campaign, campaigns):
+    for r, ticket_id, ev, ai, tanggal in _iter_export_tickets(
+            db, campaign, campaigns, date_start=date_start, date_end=date_end):
         for v in (ev.get(conf["block"]) or []):
             if not isinstance(v, dict):
                 continue
@@ -2106,6 +2139,7 @@ def compute_verification_export(db, category: str, campaign: str = None,
                 continue
             row = {
                 "ticket_id": ticket_id,
+                "tanggal_submit": tanggal,
                 "campaign": (r.campaign or "").strip(),
                 "ai_status": ai_status_label(ai),
                 "parameter": _titleize(v.get("field")),
@@ -2126,6 +2160,7 @@ def compute_verification_export(db, category: str, campaign: str = None,
     rows.sort(key=lambda x: (x["ticket_id"], x["parameter"]))
     columns = [
         ("ticket_id", "Ticket ID"),
+        ("tanggal_submit", "Tanggal Submit"),
         ("campaign", "Campaign"),
         ("ai_status", "AI Status"),
         ("parameter", "Parameter"),
@@ -2160,6 +2195,7 @@ _PHASE_EXPORT_SKIP = ("Verifikasi Statik", "Verifikasi Dinamis")
 
 PHASE_EXPORT_COLUMNS = [
     ("ticket_id", "Ticket ID"),
+    ("tanggal_submit", "Tanggal Submit"),
     ("campaign", "Campaign"),
     ("ai_status", "AI Status"),
     ("item_code", "Item Code"),
@@ -2185,7 +2221,8 @@ def export_phase_labels(db, campaign: str = None, campaigns: list = None) -> lis
 
 
 def compute_phase_export(db, phase: str, campaign: str = None,
-                         campaigns: list = None) -> dict:
+                         campaigns: list = None, date_start=None,
+                         date_end=None) -> dict:
     """Baris export untuk SATU fase percakapan (``phase`` = label kategori tampilan).
 
     Satu baris per item scorecard BELUM_SESUAI pada kategori itu, untuk tiket Not
@@ -2196,7 +2233,8 @@ def compute_phase_export(db, phase: str, campaign: str = None,
     Mengembalikan bentuk yang sama dengan ``compute_verification_export``.
     """
     rows = []
-    for r, ticket_id, ev, ai in _iter_export_tickets(db, campaign, campaigns):
+    for r, ticket_id, ev, ai, tanggal in _iter_export_tickets(
+            db, campaign, campaigns, date_start=date_start, date_end=date_end):
         codes: dict = defaultdict(list)
         for er in build_error_code_table(ev):
             ic = er.get("item_code")
@@ -2212,6 +2250,7 @@ def compute_phase_export(db, phase: str, campaign: str = None,
             pairs = codes.get(code, [])
             rows.append({
                 "ticket_id": ticket_id,
+                "tanggal_submit": tanggal,
                 "campaign": (r.campaign or "").strip(),
                 "ai_status": ai_status_label(ai),
                 "item_code": code,
@@ -2237,7 +2276,7 @@ def compute_phase_export(db, phase: str, campaign: str = None,
 
 TICKET_EXPORT_COLUMNS = [
     ("ticket_id", "Ticket ID"),
-    ("tanggal", "Tanggal"),
+    ("tanggal_submit", "Tanggal Submit"),
     ("campaign", "Campaign"),
     ("agent", "Agent"),
     ("team_leader", "Team Leader"),
@@ -2268,11 +2307,16 @@ def compute_ticket_export(db, results) -> dict:
                            Total Risk;
       * ``details_error``— deskripsi tiap kode, dipisah baris baru.
 
-    ``Tanggal`` adalah ``tms_cashline.submit_time`` — dasar yang sama dengan filter
-    tanggal di Results, supaya isi file cocok dengan rentang yang diminta. Tiket
-    tanpa baris cashline memakai ``generated_at``.
+    ``Tanggal Submit`` adalah ``submit_time`` TMS (lalu generated_at, lalu WIB
+    uploaded_at — ``_tanggal_submit_cell``), dasar yang sama dengan filter tanggal
+    di Results, supaya setiap baris file jatuh di rentang yang diminta.
+
+    SATU baris per Ticket ID (26 Oktober 2026): ``results`` memuat clone JOB-3 /
+    reprocess, yang di layar Results digabung per tiket — dulu filenya menulis
+    setiap clone (20-22 Okt: 362 baris untuk 125 tiket). Baris yang dipakai = baris
+    wakil Statistics (``one_result_per_ticket``: vonis manual final, lalu Return).
     """
-    results = list(results or [])
+    results = one_result_per_ticket(db, list(results or []))
     if not results:
         return {"columns": TICKET_EXPORT_COLUMNS, "rows": []}
 
@@ -2291,7 +2335,9 @@ def compute_ticket_export(db, results) -> dict:
     qc_map = crud.qc_status_requests_for(db, [str(r) for r in result_ids])
     mdocs = _missing_docs_map(db, done_results, eval_by_id)
     gaps = data_gap_map(db, done_results)
-    submit_by_rid, agent_by_rid = _submit_agent_map(db, done_results)
+    # Semua baris, bukan hanya ``done``: kolom Tanggal Submit juga diisi untuk tiket
+    # yang belum selesai, persis seperti filter tanggalnya membaca mereka.
+    submit_by_rid, agent_by_rid = _submit_agent_map(db, results)
     docs_by_rid = crud.document_ocr_by_result(db, [str(r.id) for r in done_results])
     snap_doc_map = document_status_map(db, done_results)
     sales_map = active_sales_map(db)
@@ -2319,9 +2365,7 @@ def compute_ticket_export(db, results) -> dict:
         evaluation = _adjusted_evaluation(raw, appeals)
         rows.append({
             "ticket_id": _customer_id(r.source_files) or rid,
-            "tanggal": submit_by_rid.get(r.id) or (
-                r.generated_at.isoformat(sep=" ") if r.generated_at else None
-            ),
+            "tanggal_submit": _tanggal_submit_cell(r, submit_by_rid.get(r.id)),
             "campaign": (r.campaign or "").strip(),
             "agent": (entry.get("name") if entry else None) or agent_id or _UNKNOWN,
             "team_leader": (entry.get("team_leader") if entry else None) or _UNKNOWN,
@@ -2333,7 +2377,7 @@ def compute_ticket_export(db, results) -> dict:
             "risk_base": top_risk_base(code_rows, raw) or "",
             "details_error": "\n".join(dict.fromkeys(details)),
         })
-    rows.sort(key=lambda x: (str(x["tanggal"] or ""), x["ticket_id"]))
+    rows.sort(key=lambda x: (str(x["tanggal_submit"] or ""), x["ticket_id"]))
     return {"columns": TICKET_EXPORT_COLUMNS, "rows": rows}
 
 
@@ -2472,7 +2516,7 @@ def _wib_today() -> date:
 
 def _series_date(r):
     """Calendar date used to place a result on the AI-status chart's x-axis WHEN the
-    ticket has neither an App C ``load_date`` nor a ``submit_time`` (see
+    ticket has no ``submit_time`` (see
     ``_ticket_dates_map`` / ``_submit_date_map`` / ``_chart_date``).
 
     Prefers the transcript's wall-clock ``generated_at`` (naive/local — used as-is,
@@ -2486,8 +2530,8 @@ def _series_date(r):
 def _submit_date_map(db, results) -> dict:
     """Map ``Result.id -> date`` hasil parse ``submit_time`` (tanggal pengajuan
     pencairan). Hanya result yang submit_time-nya terbaca di snapshot reference_data
-    yang muncul. Sejak 20 Oktober 2026 ini hanya CADANGAN tanggal tiket (tiket tanpa
-    ``load_date`` App C, lihat ``TicketDates``); dasar utamanya ``load_date``."""
+    yang muncul. Ini DASAR tanggal tiket (``TicketDates``); 20-26 Oktober 2026
+    sempat hanya cadangan di belakang ``load_date`` App C."""
     # [FIX] Ikut memakai ``_submit_time_map`` (sumber: snapshot reference_data lewat
     # ``crud.cashline_agent_index``) alih-alih query ``tms_cashline`` sendiri — tabel
     # itu sudah tidak terisi, dan menyatukan sumbernya membuat kedua peta tidak mungkin
@@ -2501,14 +2545,17 @@ def _submit_date_map(db, results) -> dict:
 
 
 class TicketDates(NamedTuple):
-    """Tanggal sebuah tiket untuk filter & grafik Statistics (20 Oktober 2026).
+    """Tanggal sebuah tiket untuk filter & grafik Statistics.
 
-    ``loads`` = seluruh ``load_date`` App C tiket itu (``ticket_load_dates``);
-    ``fallback`` = aturan lama (Tanggal Agree -> generated_at -> WIB uploaded_at),
-    dipakai HANYA bila ``loads`` kosong. Sama dengan ``crud._ticket_date_expr`` milik
-    Results: yang dihitung cuma load_date TERAKHIR, load sebelumnya diabaikan —
-    satu tiket satu tanggal, jadi Results & Statistics memilih tiket yang sama untuk
-    rentang yang sama."""
+    ``fallback`` = Tanggal Submit (``submit_time``) -> generated_at -> WIB
+    uploaded_at, sama dengan ``crud._ticket_date_expr`` milik Results — satu tiket
+    satu tanggal, jadi Results & Statistics memilih tiket yang sama untuk rentang
+    yang sama.
+
+    26 Oktober 2026: ``loads`` (``load_date`` App C, dasar utama sejak 20 Oktober)
+    selalu KOSONG — tanggal tiket kembali ke Tanggal Submit, tanggal yang juga
+    tertulis di layar dan export. Field-nya dipertahankan supaya pemanggil tidak
+    berubah."""
 
     loads: tuple
     fallback: "date | None"
@@ -2528,18 +2575,12 @@ class TicketDates(NamedTuple):
 
 
 def _ticket_dates_map(db, results) -> dict:
-    """``Result.id -> TicketDates`` untuk setiap result. Satu query
-    ``load_dates_by_ticket`` + satu baca indeks submit_time untuk seluruh daftar —
-    bukan per tiket. Cadangannya persis aturan lama ``_submit_date_map`` +
+    """``Result.id -> TicketDates`` untuk setiap result. Satu baca indeks
+    submit_time untuk seluruh daftar — bukan per tiket: ``_submit_date_map``, lalu
     ``_series_date``."""
-    cid_by_rid = {r.id: (_customer_id(r.source_files) or "").strip() for r in results}
-    loads = crud.load_dates_by_ticket(db, [c for c in cid_by_rid.values() if c])
     submit_dates = _submit_date_map(db, results)
     return {
-        r.id: TicketDates(
-            tuple(loads.get(cid_by_rid[r.id], ())),
-            submit_dates.get(r.id) or _series_date(r),
-        )
+        r.id: TicketDates((), submit_dates.get(r.id) or _series_date(r))
         for r in results
     }
 
@@ -2552,13 +2593,11 @@ def ticket_date_windows(db, ticket_ids) -> dict:
     ``_ticket_dates_map`` (which is keyed the other way round) — this is that same
     "kapan sebuah tiket terjadi" rule, just addressed by ticket id, so the QC
     Productivity table's date filter agrees with the Hierarki Failure Rate tree's.
-    Sejak 20 Oktober 2026 dasarnya ``load_date`` App C terakhir; cadangannya (tiket
-    tanpa baris App C) tetap TMS submit_time, lalu tanggal transkrip. Tiket tanpa
-    tanggal apa pun tidak muncul."""
+    Dasarnya TMS submit_time, lalu tanggal transkrip (26 Oktober 2026; 20-26
+    Oktober sempat ``load_date`` App C). Tiket tanpa tanggal apa pun tidak muncul."""
     ids = {str(t).strip() for t in (ticket_ids or ()) if str(t).strip()}
     if not ids:
         return {}
-    loads = crud.load_dates_by_ticket(db, ids)
     # submit_time dari snapshot reference_data (``crud.cashline_agent_index``),
     # sumber yang sama dengan ``_submit_time_map`` — BUKAN tabel ``tms_cashline``
     # seperti di monolit, yang tidak terisi lagi sejak reference data pindah ke DWH.
@@ -2582,15 +2621,15 @@ def ticket_date_windows(db, ticket_ids) -> dict:
                 if d is not None:
                     fallback[cid] = d
     return {
-        tid: TicketDates(tuple(loads.get(tid, ())), fallback.get(tid))
+        tid: TicketDates((), fallback.get(tid))
         for tid in ids
-        if loads.get(tid) or fallback.get(tid) is not None
+        if fallback.get(tid) is not None
     }
 
 
 def ticket_chart_dates(db, ticket_ids) -> dict:
-    """Map ticket/customer id -> chart date (``TicketDates.single()``: load_date App C
-    terakhir, else TMS ``submit_time``, else transcript date) — lihat
+    """Map ticket/customer id -> chart date (``TicketDates.single()``: TMS
+    ``submit_time``, else transcript date) — lihat
     ``ticket_date_windows``."""
     return {
         tid: d for tid, td in ticket_date_windows(db, ticket_ids).items()
@@ -2784,9 +2823,8 @@ def compute_ai_status_timeseries(db, customer_ids, campaign, granularity, start,
         results = [r for r in results if str(r.campaign or "").strip().lower() == want]
     results = one_result_per_ticket(db, results)
 
-    # Chart x-axis date = ``load_date`` App C TERAKHIR (20 Oktober 2026, sama dengan
-    # filter Results); tiket tanpa baris App C jatuh ke ``submit_time`` (Tanggal
-    # Agree), lalu tanggal transkrip (generated_at, else uploaded_at).
+    # Chart x-axis date = ``submit_time`` (Tanggal Submit, sama dengan filter
+    # Results), lalu tanggal transkrip (generated_at, else uploaded_at).
     tdates = _ticket_dates_map(db, results)
 
     def _chart_date(r):
@@ -2816,8 +2854,8 @@ def compute_ai_status_timeseries(db, customer_ids, campaign, granularity, start,
     if start_d > end_d:
         start_d, end_d = end_d, start_d
 
-    # keep only results whose chart date (``_chart_date``: load_date App C terakhir,
-    # else submit_time, else transcript date) is inside the window
+    # keep only results whose chart date (``_chart_date``: submit_time, else
+    # transcript date) is inside the window
     in_range = []
     for r in results:
         d = _chart_date(r)
@@ -3396,9 +3434,7 @@ def compute_stats_snapshot(db, customer_ids=None, roster_uids=None,
     (pohon Hierarki + Daftar Productivity QC) supaya kedua tabel itu ikut
     mengikuti filter tanggal yang sama dengan grafik AI Status. Tanggalnya adalah
     "chart date" yang SAMA dengan ``compute_ai_status_timeseries`` (``TicketDates``):
-    ``load_date`` App C TERAKHIR sejak 20 Oktober 2026, jatuh balik ke TMS
-    ``submit_time`` lalu tanggal transkrip bila tiket tidak punya baris App C —
-    supaya kedua fitur (dan menu Results) menghitung "kapan" satu tiket dengan aturan
+    TMS ``submit_time`` lalu tanggal transkrip — supaya kedua fitur (dan menu Results) menghitung "kapan" satu tiket dengan aturan
     yang identik. ``None``/``None`` (default) = tanpa batas tanggal, inilah snapshot
     harian yang di-cache global.
     """
@@ -3438,8 +3474,8 @@ def compute_stats_snapshot(db, customer_ids=None, roster_uids=None,
         base = {**base, **counts, "total_uploaded": len(statuses)}
 
     if date_start is not None or date_end is not None:
-        # Sama seperti ``compute_ai_status_timeseries``: load_date App C terakhir,
-        # jatuh balik ke TMS submit_time lalu tanggal transkrip. ``base``/status
+        # Sama seperti ``compute_ai_status_timeseries``: TMS submit_time lalu
+        # tanggal transkrip. ``base``/status
         # counts di atas SENGAJA tidak ikut diperiksa ulang di sini — dua field itu
         # tidak dipakai tab Failure Rate (satu-satunya pemanggil jendela tanggal
         # ini), jadi tetap global agar tidak menghitung dua kali tanpa manfaat.

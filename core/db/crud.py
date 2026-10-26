@@ -478,27 +478,19 @@ def _series_date_expr(db: Session):
 
 
 def _ticket_date_expr(db: Session):
-    """Tanggal tiket untuk filter Results = ``load_date`` App C TERAKHIR (20 Okt 2026).
+    """Tanggal tiket untuk filter Results = Tanggal Submit (``submit_time`` TMS).
 
-    Sebelumnya filter memakai Tanggal Agree (``_series_date_expr``), sehingga tiket
-    yang di-load App C tanggal 13 tapi Agree-nya lebih awal tidak muncul di rentang
-    load_date yang dipakai operator. Satu tiket bisa punya beberapa load_date
-    (``ticket_load_dates``); yang dipakai hanya yang TERBARU, jadi tiket masuk
-    rentang bila load terakhirnya ada di rentang.
+    26 Oktober 2026: kembali ke ``_series_date_expr`` (submit_time -> generated_at ->
+    WIB uploaded_at). Selama 20-26 Oktober dasarnya ``load_date`` App C TERAKHIR
+    (``ticket_load_dates``), tetapi tanggal itu tidak tertulis di mana pun pada
+    layar maupun export — kolom "Tanggal" export Tiket berisi submit_time, sehingga
+    ±18% baris tampak di luar rentang yang diminta. Satu tanggal untuk filter,
+    tampilan, export, dan Statistics (``stats_aggregate.TicketDates``).
 
-    Tiket tanpa baris di ``ticket_load_dates`` jatuh ke ``_series_date_expr``
-    (aturan lama) persis. ``ticket_id`` = prefix sebelum ``_`` pada file sumber
-    pertama, sama dengan ``customer_ids``. Subquery berkorelasi memakai PK
-    ``(ticket_id, load_date)``, jadi tetap satu index lookup per baris.
+    Fungsinya dipertahankan (bukan langsung ``_series_date_expr``) karena menjadi
+    titik tunggal yang dipakai ``list_results`` dan ``latest_result_date``.
     """
-    cid = func.split_part(Result.source_files[0].astext, "_", 1)
-    load_subq = (
-        db.query(func.max(TicketLoadDate.load_date))
-        .filter(TicketLoadDate.ticket_id == cid)
-        .correlate(Result)
-        .scalar_subquery()
-    )
-    return func.coalesce(load_subq, _series_date_expr(db))
+    return _series_date_expr(db)
 
 
 def latest_result_date(
@@ -644,9 +636,8 @@ def list_results(
             func.split_part(Result.source_files[0].astext, "_", 1).in_(customer_ids)
         )
     if date_start is not None or date_end is not None:
-        # Filter by the ticket's date. Sejak 20 Oktober 2026 sumbernya ``load_date``
-        # App C TERAKHIR (``ticket_load_dates``); tiket tanpa baris di sana memakai
-        # aturan lama (Tanggal Agree = ``submit_time``, lalu generated_at/uploaded_at).
+        # Filter by the ticket's date = Tanggal Submit (``submit_time``), lalu
+        # generated_at/uploaded_at. 20-26 Oktober 2026 sempat ``load_date`` App C.
         #
         # [FIX lama] Sumbernya SEKARANG snapshot ``reference_data.cashline.submit_time``
         # di ``result_data.result_json``, BUKAN tabel ``tms_cashline`` yang sudah
@@ -1286,8 +1277,13 @@ def cashline_agent_index(db: Session) -> dict:
 
     missing = [c for c, v in index.items() if not v["agent_id"]]
     if missing:
+        # DWH hanya MENGISI field yang kosong di snapshot (26 Okt 2026). Dulu
+        # entrinya menimpa utuh: DWH yang kosong menghapus submit_time snapshot,
+        # padahal filter tanggal Results (``_series_date_expr``) membaca snapshot —
+        # Statistics & export lalu jatuh ke generated_at untuk tiket yang sama.
         for cid, entry in _cashline_ids_from_dwh(missing).items():
-            index[cid] = entry
+            snap = index[cid]
+            index[cid] = {k: snap.get(k) or entry.get(k) for k in ("agent_id", "submit_time")}
     return index
 
 
@@ -1482,7 +1478,11 @@ def _stats_signature(db: Session) -> str:
     # v32: sidik jari ikut dokumen pendukung (count + max created_at/completed_at,
     #      21 Okt 2026) — unggahan dokumen menggeser PENDING ke status akhir tanpa
     #      mengubah data lain, jadi Statistics tertinggal dari Results.
-    version = "v32"
+    # v33: tanggal tiket Results & Statistics kembali ke Tanggal Submit
+    #      (``submit_time``), bukan ``load_date`` App C (26 Okt 2026). Snapshot
+    #      bertanggal v31/v32 HARUS gugur. ``ld`` tetap di sidik jari: tidak
+    #      berbahaya, dan menghapusnya hanya menggeser format tanpa manfaat.
+    version = "v33"
     sla = "1" if get_doc_sla_enabled(db) else "0"
     # Sidik jari daftar tersembunyi. WAJIB ikut: tanpa ini snapshot yang sudah
     # ter-cache akan terus menyajikan angka tiket yang baru disembunyikan sampai ada
