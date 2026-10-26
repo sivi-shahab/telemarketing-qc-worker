@@ -493,6 +493,37 @@ def _ticket_date_expr(db: Session):
     return _series_date_expr(db)
 
 
+def filter_ticket_date(db: Session, q, date_start=None, date_end=None):
+    """Batasi query ``Result`` ke tiket yang tanggalnya (``_ticket_date_expr``) ada
+    di rentang, inklusif; batas ``None`` = terbuka. Dipakai ``list_results`` dan
+    export agregat (26 Okt 2026), supaya keduanya memilih baris yang SAMA persis."""
+    series_date = _ticket_date_expr(db)
+    if date_start is not None:
+        q = q.filter(series_date >= date_start)
+    if date_end is not None:
+        q = q.filter(series_date <= date_end)
+    return q
+
+
+def submit_times_by_result(db: Session, result_ids) -> dict:
+    """``{Result.id: submit_time}`` dari snapshot evaluasi TERBARU milik baris itu
+    sendiri — sumber yang sama dengan ``_series_date_expr``. Berbeda dengan
+    ``cashline_agent_index`` (satu nilai per TIKET): tiket yang diajukan ulang
+    punya clone dengan snapshot berbeda (120559Qt9N: 16 vs 21 Okt), dan export
+    harus menulis tanggal baris yang lolos filter, bukan clone lain."""
+    ids = [r for r in (result_ids or []) if r]
+    if not ids:
+        return {}
+    rows = (
+        db.query(ResultData.result_id, _SUBMIT_TIME_JSON.astext)
+        .filter(ResultData.result_id.in_(ids))
+        .distinct(ResultData.result_id)
+        .order_by(ResultData.result_id, desc(ResultData.created_at))
+        .all()
+    )
+    return {rid: st for rid, st in rows}
+
+
 def latest_result_date(
     db: Session,
     campaigns: Optional[list[str]] = None,
@@ -647,11 +678,7 @@ def list_results(
         #
         # Ekspresinya dibagi dengan ``latest_result_date`` — lihat
         # ``_ticket_date_expr``.
-        series_date = _ticket_date_expr(db)
-        if date_start is not None:
-            q = q.filter(series_date >= date_start)
-        if date_end is not None:
-            q = q.filter(series_date <= date_end)
+        q = filter_ticket_date(db, q, date_start, date_end)
     total = q.count()
     items = (
         q.order_by(desc(Result.uploaded_at))

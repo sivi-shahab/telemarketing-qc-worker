@@ -27,6 +27,7 @@ with no error-code rows contributes to no bucket, so H+M+L+N+O ≤ submissions.
 This scan is expensive (it reads every done result's evaluation JSON), so it is run
 at most once per WIB day and cached — see ``crud.get_or_build_stats_snapshot``.
 """
+import re
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from typing import NamedTuple
@@ -2019,12 +2020,17 @@ def _transcript_cell(v: dict):
     return v.get("extracted_value")
 
 
+_SUBMIT_DATE_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}")
+
+
 def _tanggal_submit_cell(r, submit_time):
     """Isi kolom "Tanggal Submit" export: ``submit_time`` TMS apa adanya, lalu
-    ``generated_at``, lalu WIB ``uploaded_at`` — urutan yang sama dengan tanggal
-    tiket di filter Results (``crud._series_date_expr``), supaya setiap baris file
-    jatuh di rentang yang diminta."""
-    if (submit_time or "").strip():
+    ``generated_at``, lalu WIB ``uploaded_at`` — urutan (dan syarat format
+    YYYY-MM-DD) yang sama dengan tanggal tiket di filter Results
+    (``crud._series_date_expr``), supaya setiap baris file jatuh di rentang yang
+    diminta. ``submit_time`` harus milik baris ``r`` sendiri
+    (``crud.submit_times_by_result``), bukan nilai per tiket."""
+    if _SUBMIT_DATE_RE.match((submit_time or "").strip()):
         return submit_time.strip()
     if getattr(r, "generated_at", None) is not None:
         return r.generated_at.isoformat(sep=" ", timespec="seconds")
@@ -2032,15 +2038,6 @@ def _tanggal_submit_cell(r, submit_time):
         wib = r.uploaded_at.replace(tzinfo=timezone.utc).astimezone(_WIB)
         return wib.replace(tzinfo=None).isoformat(sep=" ", timespec="seconds")
     return None
-
-
-def _in_date_window(db, results, date_start=None, date_end=None) -> list:
-    """``results`` yang tanggal tiketnya (``TicketDates``, = filter Results) ada di
-    rentang. Tanpa batas apa pun daftarnya dikembalikan utuh tanpa membaca tanggal."""
-    if date_start is None and date_end is None:
-        return list(results)
-    tdates = _ticket_dates_map(db, results)
-    return [r for r in results if tdates[r.id].in_window(date_start, date_end)]
 
 
 def _iter_export_tickets(db, campaign: str = None, campaigns: list = None,
@@ -2055,11 +2052,13 @@ def _iter_export_tickets(db, campaign: str = None, campaigns: list = None,
     sama seperti tampilan dashboard.
 
     ``date_start``/``date_end`` (26 Oktober 2026) = filter tanggal menu Results,
-    dengan tanggal tiket yang sama (Tanggal Submit). Sebelumnya export agregat
-    selalu menarik SELURUH periode, apa pun rentang yang sedang dipilih di layar.
+    lewat ekspresi SQL yang sama (``crud.filter_ticket_date``), jadi baris yang
+    dipilih identik dengan tabelnya. Sebelumnya export agregat selalu menarik
+    SELURUH periode, apa pun rentang yang sedang dipilih di layar.
     """
-    done_results = one_result_per_ticket(db, _in_date_window(
-        db, done_results_query(db, campaign, campaigns).all(), date_start, date_end))
+    q = crud.filter_ticket_date(db, done_results_query(db, campaign, campaigns),
+                                date_start, date_end)
+    done_results = one_result_per_ticket(db, q.all())
     result_ids = [r.id for r in done_results]
     eval_by_id: dict = {}
     if result_ids:
@@ -2094,8 +2093,10 @@ def _iter_export_tickets(db, campaign: str = None, campaigns: list = None,
         )
         if ai not in _VERIF_EXPORT_STATUSES:
             continue
-        yield (r, _customer_id(r.source_files) or rid, ev, ai,
-               _tanggal_submit_cell(r, submit_times.get(r.id)))
+        # submit_time milik BARIS ini (evaluasi terbaru), sama dengan filter SQL —
+        # ``submit_times`` di atas per TIKET dan bisa membaca clone lain.
+        own = (((raw or {}).get("reference_data") or {}).get("cashline") or {}).get("submit_time")
+        yield (r, _customer_id(r.source_files) or rid, ev, ai, _tanggal_submit_cell(r, own))
 
 
 def compute_verification_export(db, category: str, campaign: str = None,
@@ -2338,6 +2339,9 @@ def compute_ticket_export(db, results) -> dict:
     # Semua baris, bukan hanya ``done``: kolom Tanggal Submit juga diisi untuk tiket
     # yang belum selesai, persis seperti filter tanggalnya membaca mereka.
     submit_by_rid, agent_by_rid = _submit_agent_map(db, results)
+    # Kolom Tanggal Submit: snapshot baris itu sendiri (= filter SQL), bukan nilai
+    # per tiket ``submit_by_rid`` yang bisa membaca clone pengajuan lama.
+    own_submit = crud.submit_times_by_result(db, [r.id for r in results])
     docs_by_rid = crud.document_ocr_by_result(db, [str(r.id) for r in done_results])
     snap_doc_map = document_status_map(db, done_results)
     sales_map = active_sales_map(db)
@@ -2365,7 +2369,7 @@ def compute_ticket_export(db, results) -> dict:
         evaluation = _adjusted_evaluation(raw, appeals)
         rows.append({
             "ticket_id": _customer_id(r.source_files) or rid,
-            "tanggal_submit": _tanggal_submit_cell(r, submit_by_rid.get(r.id)),
+            "tanggal_submit": _tanggal_submit_cell(r, own_submit.get(r.id)),
             "campaign": (r.campaign or "").strip(),
             "agent": (entry.get("name") if entry else None) or agent_id or _UNKNOWN,
             "team_leader": (entry.get("team_leader") if entry else None) or _UNKNOWN,
