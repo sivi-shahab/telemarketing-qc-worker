@@ -33,6 +33,11 @@ class User(Base):
     # Edit User. Dipakai batch auto assign untuk membagi ulang tiket QC itu di slot
     # berikutnya, seperti ``deactivated_at`` (20 Oktober 2026, migrasi 0070).
     left_qc_at = Column(DateTime, nullable=True)
+    # Akses Upload Audio / Upload Transcript per user, diatur Admin di Manage User
+    # (30 Oktober 2026, migrasi 0071). NULL = ikut role (default); True/False =
+    # dipaksa aktif/nonaktif untuk orang ini. Tidak berlaku untuk role ``admin``.
+    upload_audio_enabled = Column(Boolean, nullable=True)
+    upload_transcript_enabled = Column(Boolean, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
     created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
 
@@ -604,7 +609,8 @@ class QcAssignmentEvent(Base):
 class UserChangeEvent(Base):
     """Riwayat APPEND-ONLY perubahan data user lewat Edit User (20 Oktober 2026).
 
-    Satu baris = satu field yang berubah (``username|name|email|role|password``),
+    Satu baris = satu field yang berubah (``username|name|email|role|password``, plus
+    ``upload_audio|upload_transcript`` dari saklar upload per user),
     ditulis di transaksi yang sama dengan perubahannya; tidak pernah di-update atau
     dihapus. Untuk ``password`` nilai lama/baru SELALU NULL — kata sandi tidak pernah
     disimpan di riwayat. Sengaja tanpa FK ke ``users`` (seperti ``QcAssignmentEvent``):
