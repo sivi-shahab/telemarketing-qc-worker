@@ -61,7 +61,7 @@ from compliance.error_codes import (
 )
 from compliance.scoring import base_ai_status, has_blocking_intolerable_item
 from db import crud
-from db.models import Result, ResultData, User
+from db.models import Result, User
 
 # submit_time strings look like "2026-06-17 15:24:53" (mirrors
 # sales_lookup._SUBMIT_FORMATS).
@@ -522,6 +522,20 @@ def _is_new_joiner(submit_time, agent_id, sales_map) -> bool:
     return (submit_date - join_date).days < NEW_JOINER_THRESHOLD_DAYS
 
 
+def _latest_eval_map(db, result_ids, *, slim: bool = False) -> dict:
+    """``{str(result_id): result_json}`` versi TERBARU tiap result.
+
+    [3 November 2026] Menggantikan 10 salinan loop ``query(ResultData.result_id,
+    ResultData.result_json).all()`` yang menarik SEMUA versi JSON sekaligus lalu
+    membuang yang lama lewat ``setdefault``. Kini lewat ``crud.result_json_map``:
+    hanya baris terbaru, dibaca per batch (lewat cache Redis), dan ``slim=True``
+    membuang teks item scorecard yang tidak dipakai menghitung angka. Pemanggil yang
+    menulis teks item ke file (export) memakai ``slim=False``."""
+    if not result_ids:
+        return {}
+    return crud.result_json_map(db, [str(r) for r in result_ids], slim=slim)
+
+
 def _adjusted_evaluation(result_json, appeals, doc_status=None):
     """The result's ``evaluation`` dict with approved appeals applied, or None when
     the result has no usable evaluation (i.e. it is not evaluable).
@@ -956,7 +970,7 @@ def ai_status_map(db, results) -> dict:
     if not rows:
         return {}
     ids = [str(r.id) for r in rows]
-    eval_by_id = crud.result_json_map(db, ids)
+    eval_by_id = crud.result_json_map(db, ids, slim=True)
     appeals = crud.error_code_appeals_for_results(db, ids)
     # Vonis TIKET, bukan cuma baris ini — clone JOB-3 ikut terkunci ke vonis final
     # yang dijatuhkan di baris lain milik tiket yang sama (``ticket_qc_requests``).
@@ -1285,7 +1299,7 @@ def _missing_docs_map(
         flags.update(crud.get_tms_cashline_change_flags(db, stale))
     banded = [r for r in results if card_holder_bands_apply(getattr(r, "uploaded_at", None))]
     if banded and eval_by_id is None:
-        eval_by_id = crud.result_json_map(db, [str(r.id) for r in banded])
+        eval_by_id = crud.result_json_map(db, [str(r.id) for r in banded], slim=True)
     eval_by_id = eval_by_id or {}
     out = {}
     for r in results:
@@ -1340,15 +1354,7 @@ def compute_scoped_overview(db, customer_ids) -> dict:
     total = len(results)
 
     done_ids = [r.id for r in results if r.status == "done"]
-    eval_by_id: dict = {}
-    if done_ids:
-        for rid, rjson in (
-            db.query(ResultData.result_id, ResultData.result_json)
-            .filter(ResultData.result_id.in_(done_ids))
-            .order_by(ResultData.created_at.desc())
-            .all()
-        ):
-            eval_by_id.setdefault(str(rid), rjson)
+    eval_by_id = _latest_eval_map(db, done_ids, slim=True)
     appeal_map = crud.error_code_appeals_for_results(db, [str(r) for r in done_ids])
     qc_map = crud.qc_status_requests_for(db, [str(r) for r in done_ids])
 
@@ -1469,15 +1475,7 @@ def compute_failure_reasons(db, campaign: str = None, campaigns: list = None,
             r for r in done_results if tdates[r.id].in_window(date_start, date_end)
         ]
     result_ids = [r.id for r in done_results]
-    eval_by_id: dict = {}
-    if result_ids:
-        for rid, rjson in (
-            db.query(ResultData.result_id, ResultData.result_json)
-            .filter(ResultData.result_id.in_(result_ids))
-            .order_by(ResultData.created_at.desc())
-            .all()
-        ):
-            eval_by_id.setdefault(str(rid), rjson)
+    eval_by_id = _latest_eval_map(db, result_ids, slim=False)
     appeal_map = crud.error_code_appeals_for_results(db, [str(r) for r in result_ids])
     qc_map = crud.qc_status_requests_for(db, [str(r) for r in result_ids])
     mdocs = _missing_docs_map(db, done_results, eval_by_id)
@@ -1812,15 +1810,7 @@ def compute_failure_reasons_hierarchy(db, campaign: str = None, campaigns: list 
             r for r in done_results if tdates[r.id].in_window(date_start, date_end)
         ]
     result_ids = [r.id for r in done_results]
-    eval_by_id: dict = {}
-    if result_ids:
-        for rid, rjson in (
-            db.query(ResultData.result_id, ResultData.result_json)
-            .filter(ResultData.result_id.in_(result_ids))
-            .order_by(ResultData.created_at.desc())
-            .all()
-        ):
-            eval_by_id.setdefault(str(rid), rjson)
+    eval_by_id = _latest_eval_map(db, result_ids, slim=False)
     appeal_map = crud.error_code_appeals_for_results(db, [str(r) for r in result_ids])
     # Bahan penentu AI Status — dibutuhkan karena sub-tab ini kini HANYA memuat tiket
     # Not Qualified, dan vonisnya harus dihitung dengan helper kanonik yang sama
@@ -2060,15 +2050,7 @@ def _iter_export_tickets(db, campaign: str = None, campaigns: list = None,
                                 date_start, date_end)
     done_results = one_result_per_ticket(db, q.all())
     result_ids = [r.id for r in done_results]
-    eval_by_id: dict = {}
-    if result_ids:
-        for rid, rjson in (
-            db.query(ResultData.result_id, ResultData.result_json)
-            .filter(ResultData.result_id.in_(result_ids))
-            .order_by(ResultData.created_at.desc())
-            .all()
-        ):
-            eval_by_id.setdefault(str(rid), rjson)
+    eval_by_id = _latest_eval_map(db, result_ids, slim=False)
     appeal_map = crud.error_code_appeals_for_results(db, [str(r) for r in result_ids])
     qc_map = crud.qc_status_requests_for(db, [str(r) for r in result_ids])
     mdocs = _missing_docs_map(db, done_results, eval_by_id)
@@ -2323,15 +2305,7 @@ def compute_ticket_export(db, results) -> dict:
 
     done_results = [r for r in results if r.status == "done"]
     result_ids = [r.id for r in done_results]
-    eval_by_id: dict = {}
-    if result_ids:
-        for rid, rjson in (
-            db.query(ResultData.result_id, ResultData.result_json)
-            .filter(ResultData.result_id.in_(result_ids))
-            .order_by(ResultData.created_at.desc())
-            .all()
-        ):
-            eval_by_id.setdefault(str(rid), rjson)
+    eval_by_id = _latest_eval_map(db, result_ids, slim=False)
     appeal_map = crud.error_code_appeals_for_results(db, [str(r) for r in result_ids])
     qc_map = crud.qc_status_requests_for(db, [str(r) for r in result_ids])
     mdocs = _missing_docs_map(db, done_results, eval_by_id)
@@ -2447,15 +2421,7 @@ def compute_nama_ibu_kandung_rows(db, campaigns: list = None) -> list:
     """
     done_results = one_result_per_ticket(db, done_results_query(db, campaigns=campaigns).all())
     result_ids = [r.id for r in done_results]
-    eval_by_id: dict = {}
-    if result_ids:
-        for rid, rjson in (
-            db.query(ResultData.result_id, ResultData.result_json)
-            .filter(ResultData.result_id.in_(result_ids))
-            .order_by(ResultData.created_at.desc())
-            .all()
-        ):
-            eval_by_id.setdefault(str(rid), rjson)
+    eval_by_id = _latest_eval_map(db, result_ids, slim=False)
     appeal_map = crud.error_code_appeals_for_results(db, [str(r) for r in result_ids])
     submit_times = _submit_time_map(db, done_results)
     doc_map = document_status_map(db, done_results)
@@ -2868,15 +2834,7 @@ def compute_ai_status_timeseries(db, customer_ids, campaign, granularity, start,
 
     # only "done" tickets carry an evaluation → feed approve/return
     done_ids = [r.id for r, _ in in_range if r.status == "done"]
-    eval_by_id: dict = {}
-    if done_ids:
-        for rid, rjson in (
-            db.query(ResultData.result_id, ResultData.result_json)
-            .filter(ResultData.result_id.in_(done_ids))
-            .order_by(ResultData.created_at.desc())
-            .all()
-        ):
-            eval_by_id.setdefault(str(rid), rjson)
+    eval_by_id = _latest_eval_map(db, done_ids, slim=True)
     appeal_map = crud.error_code_appeals_for_results(db, [str(r) for r in done_ids])
     qc_map = crud.qc_status_requests_for(db, [str(r) for r in done_ids])
     done_in_range = [r for r, _ in in_range if r.status == "done"]
@@ -3022,15 +2980,7 @@ def compute_team_agents(db, agent_ids) -> list:
             if r.status == "done":
                 done_ids.append(r.id)
 
-        eval_by_id: dict = {}
-        if done_ids:
-            for rid, rjson in (
-                db.query(ResultData.result_id, ResultData.result_json)
-                .filter(ResultData.result_id.in_(done_ids))
-                .order_by(ResultData.created_at.desc())
-                .all()
-            ):
-                eval_by_id.setdefault(str(rid), rjson)
+        eval_by_id = _latest_eval_map(db, done_ids, slim=True)
         appeal_map = crud.error_code_appeals_for_results(db, [str(r) for r in done_ids])
         qc_map = crud.qc_status_requests_for(db, [str(r) for r in done_ids])
         done_results = [r for r in results if r.status == "done"]
@@ -3326,15 +3276,7 @@ def compute_qc_performance(db) -> list:
                 ticket_of[str(r.id)] = cid
             if r.status == "done":
                 done_ids.append(r.id)
-        eval_by_id: dict = {}
-        if done_ids:
-            for rid, rjson in (
-                db.query(ResultData.result_id, ResultData.result_json)
-                .filter(ResultData.result_id.in_(done_ids))
-                .order_by(ResultData.created_at.desc())
-                .all()
-            ):
-                eval_by_id.setdefault(str(rid), rjson)
+        eval_by_id = _latest_eval_map(db, done_ids, slim=True)
         appeal_map = crud.error_code_appeals_for_results(db, [str(r) for r in done_ids])
         qc_map = crud.qc_status_requests_for(db, [str(r) for r in done_ids])
         _done = [r for r in results if r.status == "done"]
@@ -3492,15 +3434,7 @@ def compute_stats_snapshot(db, customer_ids=None, roster_uids=None,
 
     # --- Batch lookups (avoid N+1) ---------------------------------------
     # Latest result_json per result_id.
-    eval_by_id: dict = {}
-    if result_ids:
-        for rid, rjson in (
-            db.query(ResultData.result_id, ResultData.result_json)
-            .filter(ResultData.result_id.in_(result_ids))
-            .order_by(ResultData.created_at.desc())
-            .all()
-        ):
-            eval_by_id.setdefault(str(rid), rjson)  # desc order => first seen is latest
+    eval_by_id = _latest_eval_map(db, result_ids, slim=True)
 
     # customer_id -> agent_id / submit_time (trimmed) untuk setiap cid kita.
     # submit_time dipakai cek new-joiner di bawah. Sumbernya
