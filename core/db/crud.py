@@ -366,7 +366,41 @@ def _result_json_texts(db: Session, row_ids: list) -> dict:
     }
 
 
-def result_json_map(db: Session, result_ids: list[str]) -> dict:
+# Jumlah baris ``result_data`` yang teksnya dipegang sekaligus oleh ``result_json_map``.
+# Teks mentah (Redis/Postgres) satu batch dilepas sebelum batch berikutnya diambil,
+# jadi puncak memori = hasil parse + teks SATU batch, bukan teks seluruh tiket.
+RESULT_JSON_BATCH = 200
+
+# Field teks per item ``evaluation.scorecard_result`` yang dibuang bila ``slim=True``.
+# Teks inilah yang membuat result_json berat (3 Nov 2026: evidence ±80 MB, reason
+# ±17 MB, requirement ±10 MB dari ±157 MB scorecard_result di 3.976 baris), padahal
+# vonis AI Status dan hitungan Statistics tidak membacanya. Diuji 3 Nov 2026 atas
+# seluruh 3.913 tiket ``done`` prod: keluaran ai_status_map, Overview, snapshot
+# Statistics, timeseries AI Status, QC performance, dan team agents IDENTIK antara
+# slim dan penuh. Failure Reason MEMBACA reason/requirement (teksnya tampil di layar)
+# sehingga tetap ``slim=False``. Jangan menambah field tanpa uji pembanding yang sama
+# (lihat ``tests/test_result_json_slim.py``).
+SLIM_SCORECARD_DROP = frozenset({
+    "evidence", "reason", "requirement", "point_of_improvement",
+    "dynamic_verification_detail",
+})
+
+
+def _slim_result_json(result_json):
+    """Buang ``SLIM_SCORECARD_DROP`` dari setiap item scorecard (in place)."""
+    if not SLIM_SCORECARD_DROP or not isinstance(result_json, dict):
+        return result_json
+    evaluation = result_json.get("evaluation")
+    items = evaluation.get("scorecard_result") if isinstance(evaluation, dict) else None
+    if isinstance(items, list):
+        for item in items:
+            if isinstance(item, dict):
+                for key in SLIM_SCORECARD_DROP:
+                    item.pop(key, None)
+    return result_json
+
+
+def result_json_map(db: Session, result_ids: list[str], *, slim: bool = False) -> dict:
     """Latest result_json per result_id (no N+1). Ids without result data are
     simply absent from the map.
 
@@ -377,6 +411,13 @@ def result_json_map(db: Session, result_ids: list[str]) -> dict:
     Pending Check/Statistics mengambil 18 MB JSON dari Postgres remote tiap kali
     (3,6–5,5 detik). Setiap panggilan mengembalikan dict baru (hasil parse), jadi
     pemanggil boleh mengubahnya.
+
+    [3 November 2026] Diproses per ``RESULT_JSON_BATCH`` baris, dan ``slim=True``
+    membuang teks item scorecard yang tidak dipakai menghitung vonis/angka (lihat
+    ``SLIM_SCORECARD_DROP``). Pending Check, filter AI Status, dan Statistics memuat
+    evaluasi SEMUA tiket; versi utuhnya membuat satu request memakan 1–2 GB dan API
+    di kube kena OOM. Pemanggil yang menampilkan/mengekspor teks item (tabel Results,
+    export) tetap memakai ``slim=False``.
     """
     if not result_ids:
         return {}
@@ -392,16 +433,27 @@ def result_json_map(db: Session, result_ids: list[str]) -> dict:
     if not latest:
         return {}
 
-    keys = {row_id: _result_json_key(row_id) for row_id in latest.values()}
-    cached = redis_cache.get_many(list(keys.values()))
-    texts = {row_id: cached[key] for row_id, key in keys.items() if key in cached}
-    missing = [row_id for row_id in keys if row_id not in texts]
-    if missing:
-        fetched = _result_json_texts(db, [int(r) for r in missing])
-        texts.update(fetched)
-        redis_cache.set_many({keys[row_id]: text for row_id, text in fetched.items()})
-
-    return {rid: json.loads(texts[row_id]) for rid, row_id in latest.items() if row_id in texts}
+    out: dict = {}
+    pairs = list(latest.items())
+    for start in range(0, len(pairs), RESULT_JSON_BATCH):
+        chunk = pairs[start:start + RESULT_JSON_BATCH]
+        keys = {row_id: _result_json_key(row_id) for _, row_id in chunk}
+        cached = redis_cache.get_many(list(keys.values()))
+        texts = {row_id: cached[key] for row_id, key in keys.items() if key in cached}
+        del cached
+        missing = [row_id for row_id in keys if row_id not in texts]
+        if missing:
+            fetched = _result_json_texts(db, [int(r) for r in missing])
+            texts.update(fetched)
+            redis_cache.set_many({keys[row_id]: text for row_id, text in fetched.items()})
+            del fetched
+        for rid, row_id in chunk:
+            text = texts.pop(row_id, None)
+            if text is None:
+                continue
+            parsed = json.loads(text)
+            out[rid] = _slim_result_json(parsed) if slim else parsed
+    return out
 
 
 def set_result_stage(db: Session, result_id: str, stage: str) -> None:
