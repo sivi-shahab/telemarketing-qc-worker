@@ -6,8 +6,9 @@ tidak terbaca tidak dianggap KTP lama (tidak bisa dibuktikan). Aturan usia di ba
 Usia dibaca dari tanggal lahir pada KTP (hasil OCR, ``tanggal_lahir`` YYYY-MM-DD) dan
 dihitung pada tanggal ``submit_time`` tiket di ``tms_ntb`` (tahun penuh). Di bawah 21
 atau di atas 65 tahun = tiket ditolak: skor dipaksa 0 dan AI Status FAIL, apa pun
-isi percakapannya (lewat ``scoring.no_product_interest``). Nantinya data KTP datang
-dari microsite Bank Mega; sementara ini dari foto KTP yang diunggah.
+isi percakapannya (lewat ``scoring.no_product_interest``). Data KTP = hasil OCR KTP dari API
+Microsite (snapshot ``reference_data.microsite_ktp``, lihat ``services.microsite``), bukan foto
+KTP yang diunggah ke QC.
 """
 from __future__ import annotations
 
@@ -39,21 +40,19 @@ def age_on(birth: date, on: date) -> int:
     return on.year - birth.year - ((on.month, on.day) < (birth.month, birth.day))
 
 
-def _document_nik(ocr_json) -> str | None:
-    """Digit NIK pada dokumen (baris verifikasi ``NIK``), atau None bila tidak terbaca."""
-    for row in (ocr_json or {}).get("verifications") or []:
-        if isinstance(row, dict) and str(row.get("field") or "").strip().casefold() == "nik":
-            digits = "".join(ch for ch in str(row.get("document") or "") if ch.isdigit())
-            return digits or None
-    return None
+def _document_nik(ktp) -> str | None:
+    """Digit NIK pada KTP (nilai ``nik``), atau None bila tidak terbaca."""
+    digits = "".join(ch for ch in str((ktp or {}).get("nik") or "") if ch.isdigit())
+    return digits or None
 
 
-def ntb_old_ktp_rejection(ocr_json) -> dict | None:
+def ntb_old_ktp_rejection(ktp) -> dict | None:
     """``{"kind": "ktp_lama", "nik", "reason"}`` bila NIK pada KTP bukan 16 digit (ciri KTP lama,
-    bukan e-KTP), selain itu ``None`` (termasuk NIK yang tidak terbaca)."""
-    if not isinstance(ocr_json, dict):
+    bukan e-KTP), selain itu ``None`` (termasuk NIK yang tidak terbaca). ``ktp`` = nilai KTP
+    Microsite (``services.microsite.ktp_values``)."""
+    if not isinstance(ktp, dict):
         return None
-    nik = _document_nik(ocr_json)
+    nik = _document_nik(ktp)
     if nik is None or len(nik) == NTB_NIK_LENGTH:
         return None
     return {
@@ -66,12 +65,12 @@ def ntb_old_ktp_rejection(ocr_json) -> dict | None:
     }
 
 
-def ntb_age_rejection(ocr_json, submit_time) -> dict | None:
+def ntb_age_rejection(ktp, submit_time) -> dict | None:
     """``{"age", "tanggal_lahir", "submit_date", "reason"}`` bila usianya di luar 21-65,
     selain itu ``None`` (termasuk tanggal lahir atau tanggal submit yang tidak terbaca)."""
-    if not isinstance(ocr_json, dict):
+    if not isinstance(ktp, dict):
         return None
-    birth = _to_date(ocr_json.get("tanggal_lahir"))
+    birth = _to_date(ktp.get("tanggal_lahir"))
     submitted = _to_date(submit_time)
     if birth is None or submitted is None:
         return None
@@ -92,18 +91,19 @@ def ntb_age_rejection(ocr_json, submit_time) -> dict | None:
     }
 
 
-def apply_ntb_ktp_rejection(evaluation, ocr_by_doc_type, db, customer_id):
-    """Salinan ``evaluation`` dengan ``ntb_ktp_rejection`` bila KTP-nya KTP lama (NIK bukan 16 digit)
-    atau menunjukkan usia di luar batas. Tidak menyentuh evaluasi non-NTB atau tiket tanpa KTP terunggah."""
+def apply_ntb_ktp_rejection(evaluation, db, customer_id):
+    """Salinan ``evaluation`` dengan ``ntb_ktp_rejection`` bila KTP Microsite-nya KTP lama (NIK bukan
+    16 digit) atau menunjukkan usia di luar batas. Tidak menyentuh evaluasi non-NTB atau tiket tanpa
+    KTP Microsite."""
     if not is_ntb_evaluation(evaluation) or not customer_id:
         return evaluation
-    ktp = dict(ocr_by_doc_type or {}).get("ktp")
-    if not isinstance(ktp, dict):
+    from db import crud
+
+    ktp = crud.get_microsite_ktp_by_result_id(db, customer_id)
+    if not ktp:
         return evaluation
     rejection = ntb_old_ktp_rejection(ktp)
     if rejection is None:
-        from db import crud
-
         row = crud.get_tms_ntb_by_result_id(db, customer_id) or {}
         rejection = ntb_age_rejection(ktp, row.get("submit_time"))
     if rejection is None:
