@@ -2086,7 +2086,9 @@ def _iter_export_tickets(db, campaign: str = None, campaigns: list = None,
             continue
         # submit_time milik BARIS ini (evaluasi terbaru), sama dengan filter SQL —
         # ``submit_times`` di atas per TIKET dan bisa membaca clone lain.
-        own = (((raw or {}).get("reference_data") or {}).get("cashline") or {}).get("submit_time")
+        _ref = (raw or {}).get("reference_data") or {}
+        own = ((_ref.get("cashline") or {}).get("submit_time")
+               or (_ref.get("ntb") or {}).get("submit_time"))
         yield (r, _customer_id(r.source_files) or rid, ev, ai, _tanggal_submit_cell(r, own))
 
 
