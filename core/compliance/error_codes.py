@@ -2552,6 +2552,16 @@ def _static_band_reason(row: dict, rule: dict, waived: bool = False) -> str:
                 f"tidak terverifikasi.")
     ref_part = f', Ascend "{ref}"' if ref else ""
     detail = f'{label} disebut "{ext}"{ref_part} — mirip {_format_percent(sim)}'
+    if row.get("ascend_alias_matched") and sim >= rule["match_min"]:
+        return (f'{label} disebut "{ext}", Ascend "{ref}" memuat dua nama dan nasabah '
+                f'menyebut salah satunya ("{row["ascend_alias_matched"]}"), sesuai Ascend.')
+    if row.get("ascend_spelled") is True and sim >= rule["match_min"]:
+        return (f'{label} disebut "{ext}", Ascend "{ref}" — nasabah mengeja nama dengan satu '
+                f"kata per huruf dan hurufnya sama dengan Ascend, sesuai Ascend.")
+    if row.get("ascend_incomplete") is True:
+        # Aturan "Ascend tidak lengkap": kata tambahan nasabah di luar jumlah kata Ascend
+        # diabaikan, angkanya tetap similarity biasa dan tunduk pada band.
+        detail += " (kata tambahan nasabah di luar jumlah kata Ascend diabaikan)"
     if sim >= rule["match_min"]:
         return f"{detail}, sesuai Ascend."
     if sim >= rule["doc_min"]:
@@ -2663,9 +2673,13 @@ def normalize_static_verification(evaluation: dict) -> dict:
         return evaluation
     from compliance.documents import card_holder_doc_bands, static_rules_version
     from compliance.static_similarity import (
+        ascend_dieja_per_kata,
+        ascend_tidak_lengkap,
+        best_alias_part,
         best_static_match,
         four_digit_year_required,
         mention_rows,
+        similarity_nama,
     )
 
     bands = card_holder_doc_bands(evaluation)
@@ -2746,6 +2760,19 @@ def normalize_static_verification(evaluation: dict) -> dict:
         updated = {**v, "extracted_value": value, "similarity_percent": score}
         if source is not None:
             updated["source_file"] = source
+        updated.pop("ascend_incomplete", None)
+        updated.pop("ascend_alias_matched", None)
+        updated.pop("ascend_spelled", None)
+        if field == "nama_ibu_kandung":
+            # Penanda untuk _static_band_reason. ALIAS didahulukan: bila salah satu nama
+            # di "XX ALIAS YY" yang disebut, itulah penjelasannya.
+            alias = best_alias_part(ref, value)
+            if alias is not None and alias[1] >= 80 and alias[1] > (similarity_nama(ref, value) or 0):
+                updated["ascend_alias_matched"] = alias[0]
+            elif ascend_dieja_per_kata(ref, value):
+                updated["ascend_spelled"] = True
+            elif ascend_tidak_lengkap(ref, value):
+                updated["ascend_incomplete"] = True
         recomputed.append(updated)
         dirty.add(idx)
     if dirty:
@@ -2855,7 +2882,73 @@ def _dynamic_skipped_reason(v: dict) -> str:
     )
 
 
+def _email_part_similarity(a: str, b: str) -> float:
+    from compliance.static_similarity import levenshtein
+    n = max(len(a), len(b))
+    return 100.0 if n == 0 else (1 - levenshtein(a, b) / n) * 100
+
+
+def normalize_email_verification(evaluation: dict) -> dict:
+    """Normalisasi ejaan email pada baris ``alamat_email_terdaftar`` (14 Oktober 2026).
+
+    Feedback QC Bank Mega 12 Oktober: email yang dieja ("DHI LAH titik AS tujuh at gmail
+    dot com") diekstrak LLM apa adanya dan dibandingkan mentah dengan Ascend
+    ("DHILAH.AS7@GMAIL.COM"), sehingga MISMATCH padahal ucapannya benar. Normalisasi
+    memakai fungsi YANG SAMA dengan NTB (``spoken_normalize.normalize_email``).
+
+    Pencocokan (19 Oktober 2026): alamat utuh dinilai SATU entitas, MATCH bila
+    similarity >= 80; ``similarity_percent`` = similarity alamat utuh. Baris
+    hanya diubah bila hasilnya beda dari yang ditulis LLM. Bila vonis berubah menjadi
+    MATCH dan aturan 2-match KB_CL_24 jadi terpenuhi, SC_CL_24 dipulihkan ke SESUAI.
+    Sisi yang kosong tidak disentuh (ditangani ``normalize_dynamic_verification``).
+    """
+    if not evaluation:
+        return evaluation
+    items = evaluation.get("card_holder_verification")
+    if not isinstance(items, list) or not items:
+        return evaluation
+    from compliance.spoken_normalize import normalize_email
+
+    new_items, changed, flipped = [], False, False
+    for it in items:
+        v = it or {}
+        if v.get("field") != "alamat_email_terdaftar" or _dynamic_side_missing(v):
+            new_items.append(it)
+            continue
+        ref, ext = normalize_email(v.get("reference_value")), normalize_email(v.get("extracted_value"))
+        if not ref or not ext:
+            new_items.append(it)
+            continue
+        sim = round(_email_part_similarity(ref, ext))
+        match = "MATCH" if sim >= 80 else "MISMATCH"
+        if match == v.get("match") and v.get("extracted_value") == ext and v.get("similarity_percent") == sim:
+            new_items.append(it)
+            continue
+        if match == v.get("match") and match == "MISMATCH":
+            # tetap MISMATCH: hanya angka & nilai ternormalisasi yang diperbarui
+            new_items.append({**v, "extracted_value": ext, "similarity_percent": sim})
+            changed = True
+            continue
+        reason = (f"Email sesudah normalisasi ejaan {ext} "
+                  f"{'sesuai' if match == 'MATCH' else 'tidak sesuai'} dengan Ascend {ref} ({sim}%).")
+        new_items.append({**v, "extracted_value": ext, "match": match,
+                          "similarity_percent": sim, "reason": reason})
+        changed = True
+        flipped = flipped or (match == "MATCH" and v.get("match") != "MATCH")
+    if not changed:
+        return evaluation
+    result = {**evaluation, "card_holder_verification": new_items}
+    if flipped and card_holder_two_match_satisfied(new_items):
+        result = _restore_scorecard_items(result, {CARD_HOLDER_DYNAMIC_SCORECARD})
+    return result
+
+
 def normalize_dynamic_verification(evaluation: dict) -> dict:
+    evaluation = normalize_email_verification(evaluation)
+    return _normalize_dynamic_skipped(evaluation)
+
+
+def _normalize_dynamic_skipped(evaluation: dict) -> dict:
     """Baris verifikasi DINAMIS yang salah satu sisinya kosong menjadi ``SKIPPED_NULL``.
 
     Aturan (31 Agustus 2026, atas permintaan Bank Mega): untuk 9 field dinamis

@@ -451,35 +451,17 @@ def _codes_awaiting_document(evaluation) -> set:
 
 
 def doc_requirements_waived(result_json) -> bool:
-    """True bila kewajiban dokumen tiket ini DICABUT karena sudah ada pelanggaran
-    non-tolerable **lain** (lihat catatan di atas).
+    """Selalu False: kewajiban dokumen TIDAK PERNAH dicabut oleh pelanggaran lain.
 
-    Kata "lain" yang menanggung seluruh beban aturan ini: item scorecard yang jatuh
-    JUSTRU karena verifikasi yang sedang dibuktikan dokumen itu
-    (``_codes_awaiting_document``) TIDAK dihitung. Tanpa pengecualian itu aturannya
-    memakan dirinya sendiri — MISMATCH nama pemilik rekening menjatuhkan SC_CL_13
-    (non-tolerable), pembebasan lalu mencabut permintaan cover buku tabungan yang
-    seharusnya menyembuhkannya, dan jalur dokumen yang sengaja dibuka 31 Agustus 2026
-    tertutup lagi.
-    """
-    evaluation = _evaluation_any(result_json)
-    if not isinstance(evaluation, dict):
-        return False
-    rows = evaluation.get("scorecard_result")
-    if not isinstance(rows, list):
-        return False
-    awaiting = None
-    for item in rows:
-        it = item or {}
-        if str(it.get("tolerable") or "").strip().upper() != "NO":
-            continue
-        if str(it.get("status") or "").strip().upper() != "BELUM_SESUAI":
-            continue
-        if awaiting is None:              # dihitung sekali, hanya bila perlu
-            awaiting = _codes_awaiting_document(evaluation)
-        if str(it.get("item_code") or "").strip().upper() in awaiting:
-            continue
-        return True
+    Pembebasan 3 September 2026 (tiket yang sudah kena pelanggaran non-tolerable lain
+    tidak diminta dokumen) DIBALIK 30 Oktober 2026 atas arahan user: kewajiban dokumen
+    berdiri sendiri. Nama ibu kandung di zona abu-abu tetap meminta KK (PENDING selama
+    H+2, B09 sesudahnya) walau ada item non-tolerable lain yang gagal.
+
+    Fungsinya dipertahankan (bukan dihapus) karena dipanggil dari ``stats``,
+    ``stats_aggregate`` dan ``error_codes``; cabang "waived" di sana kini tidak pernah
+    jalan. Status akhir tiket tetap diveto item non-tolerable yang gagal
+    (``stats_aggregate._result_ai_status``), itu aturan terpisah."""
     return False
 
 

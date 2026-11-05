@@ -37,6 +37,10 @@ Setelah N keluaran terkumpul:
    ``scorecard_result``) diambil UTUH dari keluaran rekaman utama. Tiap panggilan
    menilainya juga, tetapi yang jadi acuan hanya milik rekaman utama.
 
+   PENGECUALIAN (30 Oktober 2026) — ``card_holder_verification`` (semua field)
+   digabung lintas rekaman oleh ``_merge_card_holder_mentions``, supaya jawaban di
+   rekaman perbaikan ikut dihitung.
+
    PENGECUALIAN (14 September 2026) — ``cashline_data_extraction`` /
    ``cashline_data_verification``: kedua blok ini TIDAK ikut aturan "utuh dari
    utama" di atas, melainkan digabung FIELD DEMI FIELD lewat
@@ -324,6 +328,72 @@ def _apply_wajib_ulang_final_konfirmasi(
     return {**base, "scorecard_result": out_rows}, rincian
 
 
+def _merge_card_holder_mentions(base: dict, evaluations: list[dict]) -> None:
+    """Gabungkan ``card_holder_verification`` LINTAS rekaman, SEMUA field (30 Oktober 2026).
+
+    Tanpa ini blok verifikasi kartu diambil UTUH dari rekaman utama (lihat docstring
+    modul nomor 3), sehingga jawaban yang baru benar di rekaman perbaikan tidak pernah
+    dihitung — tiket ``200923fExg``: utama "Nuraeni", perbaikan "Ramlah" x2 vs Ascend
+    RAMLAH. Tiap panggilan LLM hanya melihat rekamannya sendiri, jadi penggabungan harus
+    dilakukan di sini.
+
+    * Semua field: ``extracted_mentions`` dari semua rekaman digabung urut kronologis;
+      penyebutan yang sama persis (nilai, timestamp, berkas) tidak digandakan.
+    * Field STATIK (``static_similarity.STATIC_SIMILARITY``: tanggal lahir, nama ibu):
+      hanya itu — nilai, kecocokan, dan alasan dihitung ulang saat baca dari penyebutan
+      (penyebutan terbaik menang).
+    * Field DINAMIS (alamat, telepon, email, kartu suplemen, dst.): kecocokan dinilai
+      LLM per rekaman, jadi baris diambil dari rekaman TERBARU yang ``extracted_value``-nya
+      terisi (aturan yang sama dengan ``_merge_cashline_data``); bila tak satu pun terisi,
+      baris rekaman utama dipertahankan.
+    """
+    from compliance.static_similarity import STATIC_SIMILARITY
+
+    urut: list = []
+    per_field: dict = {}
+    for i, ev in enumerate(evaluations):
+        for v in ev.get("card_holder_verification") or []:
+            if isinstance(v, dict) and v.get("field"):
+                if v["field"] not in per_field:
+                    per_field[v["field"]] = []
+                    urut.append(v["field"])
+                per_field[v["field"]].append((i, v))
+    if not urut:
+        return
+
+    base_by_field = {
+        v.get("field"): v
+        for v in (base.get("card_holder_verification") or [])
+        if isinstance(v, dict) and v.get("field")
+    }
+    hasil: list = []
+    for field in urut:
+        baris_field = per_field[field]
+        gabung: list = []
+        terlihat = set()
+        for _i, v in baris_field:
+            for m in v.get("extracted_mentions") or []:
+                d = m if isinstance(m, dict) else {"value": m}
+                kunci = (str(d.get("value")), str(d.get("timestamp")), str(d.get("source_file")))
+                if kunci in terlihat:
+                    continue
+                terlihat.add(kunci)
+                gabung.append(copy.deepcopy(m))
+
+        if field in base_by_field:
+            baris = base_by_field[field]
+        else:
+            baris = copy.deepcopy(baris_field[0][1])
+        if field not in STATIC_SIMILARITY:
+            terisi = [(i, v) for i, v in baris_field if not _kosong(v.get("extracted_value"))]
+            if terisi:
+                baris = copy.deepcopy(max(terisi, key=lambda t: t[0])[1])
+        if gabung:
+            baris["extracted_mentions"] = gabung
+        hasil.append(baris)
+    base["card_holder_verification"] = hasil
+
+
 def merge_parallel(
     evaluations: list[dict],
     files: list[str],
@@ -417,6 +487,8 @@ def merge_parallel(
         base["cashline_data_extraction"] = merged_extraction
     if merged_verification is not None:
         base["cashline_data_verification"] = merged_verification
+
+    _merge_card_holder_mentions(base, evaluations)
 
     return base, rincian, rincian_cashline
 

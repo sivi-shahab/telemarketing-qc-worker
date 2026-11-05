@@ -64,6 +64,8 @@ from compliance.pdf_parser import (
     transcript_plain_text,
 )
 from compliance.parallel_pass import map_concurrently, merge_parallel
+from compliance.reason_speaker import stamp_reason_speaker
+from compliance.mention_timestamp import stamp_mention_timestamps
 from compliance.recording_type import stamp_evidence_tags, stamp_reason_provenance
 from compliance.recording_validation import pilih_recording_utama, tags_by_file
 from compliance.mus_exemption import stamp as stamp_mus_exemption
@@ -796,6 +798,13 @@ def process_transcript(result_id: str):
             # SEBELUM provenance, karena yang belakangan menempelkan "- Evidence diambil
             # dari ...". Lihat ``call_ownership.stamp_agent_name_reason``.
             evaluation = stamp_agent_name_reason(evaluation, name_online)
+            # Pengucap evidence (label ASLI PDF, bukan hasil fix_speaker_roles) ditulis
+            # SEBELUM provenance, yang memasang ulang ekor "- Evidence diambil dari ...".
+            evaluation = stamp_reason_speaker(evaluation, pdf_paths)
+            # Timestamp penyebutan nasabah yang ditulis LLM diperiksa terhadap segmen PDF
+            # mentah; yang jatuh di luar segmen pemuat nilainya diganti rentang segmen itu
+            # (tiket 080822Ha4J: blok 18 menit, LLM menebak 18:00.68 di luar blok).
+            evaluation = stamp_mention_timestamps(evaluation, pdf_paths)
             evaluation = stamp_reason_provenance(evaluation, recording_tags)
 
             # 5f. Pengecualian Mega Ultima Shield diselesaikan SEBELUM skor dihitung —
