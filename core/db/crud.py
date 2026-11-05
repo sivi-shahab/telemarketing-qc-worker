@@ -2386,6 +2386,11 @@ def reference_snapshot_index(db: Session, cids=None) -> dict[str, dict]:
     kekurangan data yang sebenarnya tidak pernah diperiksa.
 
     ``cids`` = None -> seluruh dataset; sebuah iterable -> dibatasi ke cid itu saja.
+
+    Campaign NTB (5 November 2026) menyimpan snapshot ``reference_data = {"ntb":
+    <baris TMS NTB | null>}`` — tanpa ``cashline``/``customer``. Entrinya membawa
+    ``"ntb": True/False`` (dan ``agent_id`` dari baris NTB); untuk snapshot Cashline
+    ``"ntb"`` bernilai None. Pembaca memakainya untuk tidak menagih Ascend dari NTB.
     """
     wanted = None
     if cids is not None:
@@ -2393,6 +2398,7 @@ def reference_snapshot_index(db: Session, cids=None) -> dict[str, dict]:
         if not wanted:
             return {}
 
+    _ref = ResultData.result_json["reference_data"]
     rows = (
         db.query(
             func.split_part(Result.source_files[0].astext, "_", 1).label("cid"),
@@ -2407,6 +2413,8 @@ def reference_snapshot_index(db: Session, cids=None) -> dict[str, dict]:
             ).label("customer_type"),
             ResultData.result_json["reference_data"]["cashline"]["agent_id"]
             .astext.label("agent_id"),
+            func.jsonb_typeof(_ref["ntb"]).label("ntb_type"),
+            _ref["ntb"]["agent_id"].astext.label("ntb_agent_id"),
         )
         .join(ResultData, ResultData.result_id == Result.id)
         .distinct(Result.id)
@@ -2415,9 +2423,17 @@ def reference_snapshot_index(db: Session, cids=None) -> dict[str, dict]:
     )
 
     index: dict[str, dict] = {}
-    for cid, cashline_type, customer_type, agent_id in rows:
+    for cid, cashline_type, customer_type, agent_id, ntb_type, ntb_agent_id in rows:
         key = (cid or "").strip()
         if not key or (wanted is not None and key not in wanted):
+            continue
+        if ntb_type is not None:
+            index[key] = {
+                "cashline": False,
+                "customer": False,
+                "agent_id": (ntb_agent_id or "").strip() or None,
+                "ntb": ntb_type == "object",
+            }
             continue
         if cashline_type is None and customer_type is None:
             continue  # snapshot reference_data belum ada -> belum bisa dinilai
@@ -2425,6 +2441,7 @@ def reference_snapshot_index(db: Session, cids=None) -> dict[str, dict]:
             "cashline": cashline_type == "object",
             "customer": customer_type == "object",
             "agent_id": (agent_id or "").strip() or None,
+            "ntb": None,
         }
     return index
 
@@ -2461,8 +2478,9 @@ def reference_gap_retry_plan(db: Session, since: datetime) -> list[dict]:
     Agent tidak terpetakan TIDAK ikut: itu bukan data yang dicari ulang ke DWH.
 
     Bentuk tiap entri = ``reprocess_plan_for_tickets`` ditambah ``gaps``
-    (``"tms"``/``"ascend"``). Fungsi ini TANPA HTTP: apakah DWH sekarang sudah punya
-    datanya diputuskan pemanggilnya.
+    (``"tms"``/``"ascend"``) dan ``ntb`` (True untuk snapshot campaign NTB, yang
+    hanya menunggu baris TMS NTB — 5 November 2026). Fungsi ini TANPA HTTP: apakah
+    DWH sekarang sudah punya datanya diputuskan pemanggilnya.
     """
     cid = func.split_part(Result.source_files[0].astext, "_", 1)
     newest = (
@@ -2477,6 +2495,7 @@ def reference_gap_retry_plan(db: Session, since: datetime) -> list[dict]:
             newest.c.cid,
             func.jsonb_typeof(ResultData.result_json["reference_data"]["cashline"]),
             func.jsonb_typeof(ResultData.result_json["reference_data"]["customer"]),
+            func.jsonb_typeof(ResultData.result_json["reference_data"]["ntb"]),
         )
         .join(ResultData, ResultData.result_id == newest.c.id)
         .filter(newest.c.status == "done")
@@ -2485,9 +2504,18 @@ def reference_gap_retry_plan(db: Session, since: datetime) -> list[dict]:
         .all()
     )
     gaps_by_tid: dict[str, tuple] = {}
-    for tid, cashline_type, customer_type in rows:
+    ntb_tids: set = set()
+    for tid, cashline_type, customer_type, ntb_type in rows:
         tid = (tid or "").strip()
-        if not tid or (cashline_type is None and customer_type is None):
+        if not tid:
+            continue
+        if ntb_type is not None:
+            # Snapshot NTB (5 November 2026): satu-satunya acuan = baris TMS NTB.
+            if ntb_type != "object":
+                gaps_by_tid[tid] = ("tms",)
+                ntb_tids.add(tid)
+            continue
+        if cashline_type is None and customer_type is None:
             continue
         gaps = []
         if cashline_type != "object":
@@ -2514,7 +2542,8 @@ def reference_gap_retry_plan(db: Session, since: datetime) -> list[dict]:
     for p in plans:
         if reviewed.intersection(p["old_result_ids"]):
             continue
-        out.append({**p, "gaps": gaps_by_tid[p["ticket_id"]]})
+        out.append({**p, "gaps": gaps_by_tid[p["ticket_id"]],
+                    "ntb": p["ticket_id"] in ntb_tids})
     return out
 
 

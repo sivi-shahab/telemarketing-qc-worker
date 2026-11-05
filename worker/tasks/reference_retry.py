@@ -72,11 +72,17 @@ def run_once(db, now: datetime = None) -> dict:
         if summary["requeued"] >= MAX_PER_RUN:
             break
         summary["checked"] += 1
-        bundle, pasti = data_dwh.fetch_bundle_checked(plan["ticket_id"])
+        if plan.get("ntb"):
+            # Campaign NTB (5 November 2026): yang ditunggu hanya baris TMS NTB.
+            row, pasti = data_dwh.fetch_ntb_checked(plan["ticket_id"])
+            lengkap = row is not None
+        else:
+            bundle, pasti = data_dwh.fetch_bundle_checked(plan["ticket_id"])
+            lengkap = bundle.get("cashline") is not None and bundle.get("customer") is not None
         if not pasti:
             summary["dwh_unreachable"] += 1
             continue
-        if bundle.get("cashline") is None or bundle.get("customer") is None:
+        if not lengkap:
             summary["still_missing"] += 1
             continue
         job = crud.create_reprocess_job(
