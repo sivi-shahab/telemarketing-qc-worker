@@ -1574,7 +1574,11 @@ def _stats_signature(db: Session) -> str:
     # v34: skor & vonis tiket NTB dihitung dengan aturan NTB (varian minat, tanpa
     #      score bomb/veto) dan Tanggal Submit NTB dari ``reference_data.ntb``
     #      (5 Nov 2026). Isi baris berubah di tempat, jadi snapshot v33 harus gugur.
-    version = "v34"
+    # v35: aturan skor NTB monorepo (score bomb 25% skor maksimal per kelompok gagal:
+    #      KTP, Legal Statement, PDP, Final Confirmation + veto non-tolerable) dan
+    #      verifikasi NTB deterministik (5 Nov 2026). Skor/vonis tiket NTB lama berubah
+    #      saat baca tanpa data baru, jadi snapshot v34 harus gugur.
+    version = "v35"
     sla = "1" if get_doc_sla_enabled(db) else "0"
     # Sidik jari daftar tersembunyi. WAJIB ikut: tanpa ini snapshot yang sudah
     # ter-cache akan terus menyajikan angka tiket yang baru disembunyikan sampai ada
@@ -2258,6 +2262,32 @@ def get_ascend_custp_by_result_id(db: Session, result_id: str) -> Optional[dict]
     tidak pernah didefinisikan di modul ini). ``db`` diabaikan.
     """
     return get_campaign_bundle(db, result_id).get("customer")
+
+
+def get_tms_ntb_by_result_id(db: Session, result_id: str) -> Optional[dict]:
+    """Baris TMS campaign NTB (dict ber-key header export TMS) untuk ``result_id``, atau ``None``.
+
+    Sumber production: App A ``/campaign/new-to-bank-eksternal/{id}`` (DWH), lewat
+    snapshot ``reference_data.ntb`` yang disimpan worker saat evaluasi, sehingga yang
+    ditampilkan PERSIS baris yang dipakai menilai tiket. Belum ada snapshot (tiket belum
+    dievaluasi, atau ``db`` None) -> tanya DWH langsung (``data_dwh.fetch_ntb_checked``).
+    Bentuk barisnya sama dengan tabel ``tms_ntb`` monorepo (144 kolom header TMS), jadi
+    ``compliance.ntb_verification`` / ``ntb_ktp`` memakainya tanpa perubahan."""
+    rid = str(result_id or "").strip()
+    if not rid:
+        return None
+    if db is not None:
+        snap = (
+            db.query(ResultData.result_json["reference_data"]["ntb"])
+            .join(Result, ResultData.result_id == Result.id)
+            .filter(func.split_part(Result.source_files[0].astext, "_", 1) == rid)
+            .order_by(desc(ResultData.created_at))
+            .first()
+        )
+        if snap is not None and isinstance(snap[0], dict):
+            return snap[0]
+    row, _pasti = data_dwh.fetch_ntb_checked(rid)
+    return row
 
 
 # TMS change flag -> document types allowed for upload. KK and cover_buku_tabungan
@@ -4286,7 +4316,12 @@ def carry_over_qc_work(db: Session, old_result_ids, new_result_id) -> dict:
                                     r.status_before, r.status_after, r.comment, r.created_at),
           "status_events")
     _move(QcManualCheck, lambda r: (r.checked_by_username, r.note, r.created_at), "manual_checks")
-    _move(Document, lambda r: (r.doc_type, r.object_path or r.filename), "documents")
+    # Kunci dokumen = jenis + NAMA objek (segmen terakhir path), bukan path utuh: reproses
+    # NTB menyalin dokumen ke ``<row baru>/<nama>`` SEBELUM evaluasi (KTP dipakai menilai,
+    # ``reprocess_ticket._copy_documents``), dan salinan itu tidak boleh berlipat dengan
+    # aslinya yang dibawa di sini. Duplikat JOB-3 (path identik) tetap tersaring.
+    _move(Document, lambda r: (r.doc_type, (r.object_path or r.filename or "").rsplit("/", 1)[-1]),
+          "documents")
     _move(ErrorCodeAppeal, lambda r: (r.error_code, r.item_code, r.appeal_kind,
                                       r.qc_new_error_code, r.qc_reason,
                                       r.requested_by_username, r.requested_at), "appeals")

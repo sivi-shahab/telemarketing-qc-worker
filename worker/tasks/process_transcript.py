@@ -46,7 +46,7 @@ from services.s3_buckets import build_minio_client
 from services import data_dwh
 from compliance.processing_stages import PROCESSING_STAGES, STAGE_KEYS
 
-from compliance.call_ownership import agent_name_verdict, stamp_agent_name_reason
+from compliance.call_ownership import agent_name_verdict, apply_ntb_agent_name_verdict, stamp_agent_name_reason
 from compliance.campaign_kind import is_collection, is_ntb, parse_collection_campaigns
 from compliance.collection_report import (
     apply_configured_weights,
@@ -64,6 +64,9 @@ from compliance.pdf_parser import (
     transcript_plain_text,
 )
 from compliance.parallel_pass import map_concurrently, merge_parallel
+from compliance.evidence_check import apply_evidence_check
+from compliance.reason_speaker import stamp_reason_speaker
+from compliance.mention_timestamp import stamp_mention_timestamps
 from compliance.recording_type import stamp_evidence_tags, stamp_reason_provenance
 from compliance.recording_validation import pilih_recording_utama, tags_by_file
 from compliance.mus_exemption import stamp as stamp_mus_exemption
@@ -73,6 +76,8 @@ from compliance.reference_data import (
     build_reference_data,
     customer_id_from_filenames,
 )
+from compliance.campaign_profile import is_ntb_evaluation
+from compliance.ntb_verification import apply_handphone_belum_dinilai, apply_pdp_supplement_belum_dinilai, apply_persetujuan_data_belum_dinilai, apply_lama_bekerja_verdict, apply_telepon_kantor_verdict, apply_hp_keluarga_verdict, apply_supplement_verdicts, apply_verification_verdicts, ensure_scorecard_items, ktp_ocr_values
 from compliance.sales_roster import parse_roster
 from prompt.recording_type import TAG_LABELS, TAG_UTAMA
 from db import crud
@@ -224,7 +229,8 @@ def _assigned_name_online(db, customer_id: str, tms_row: "dict | None" = None
                           ) -> "tuple[str | None, str | None, tuple, str]":
     """``(agent_id, NAME ONLINE, seluruh NAME ONLINE roster, nama karyawan)`` tiket ini.
 
-    ``agent_id`` dari ``tms_cashline.agent_id`` (satu agent per tiket), NAME ONLINE
+    ``agent_id`` dari ``tms_cashline.agent_id`` (satu agent per tiket; campaign NTB:
+    ``tms_ntb.agent_id``, lihat ``campaign_profile.agent_from_ntb_tms``), NAME ONLINE
     dari kolom E roster sales yang aktif. Daftar NAME ONLINE seluruh roster ikut
     dikembalikan: ``call_ownership.agent_name_verdict`` memakainya untuk membedakan
     "agent menyebut nama on-air agent LAIN di roster" dari sekadar salah ucap.
@@ -451,7 +457,9 @@ def process_transcript(result_id: str):
         # TIKET SATU PDF TIDAK TERSENTUH — dijamin jaring pengaman di dalam
         # ``pilih_recording_utama``, dan itulah yang membuat seluruh tiket
         # single-recording yang sudah ada tidak bergeser sama sekali.
-        seleksi = pilih_recording_utama(pdf_paths, expected_ticket_id=customer_id_early)
+        seleksi = pilih_recording_utama(
+            pdf_paths, expected_ticket_id=customer_id_early, campaign=result.campaign
+        )
         if seleksi.get("fallback") and len(pdf_paths) > 1:
             logger.warning(
                 "result %s: jaring pengaman seleksi rekaman menyala (%s)",
@@ -788,6 +796,30 @@ def process_transcript(result_id: str):
             # menebak dari waktu upload — dan tiket lama tidak ikut dinilai ulang.
             evaluation = stamp_static_rules(evaluation)
 
+            # 5a. Kutipan evidence TIDAK BOLEH dikarang: SESUAI yang kutipannya tidak ada di transkrip mentah
+            # diturunkan ke BELUM_SESUAI. Harus pada keluaran LLM mentah, sebelum langkah-langkah di bawah yang
+            # menulis ulang evidence; lihat ``compliance.evidence_check``. Production: HANYA NTB (port NTB
+            # monorepo 5 Nov 2026); Cashline tetap perilaku production.
+            if is_ntb_evaluation(evaluation):
+                evaluation = apply_evidence_check(evaluation, pdf_paths)
+
+            # 5b'. NTB: verifikasi deterministik terhadap baris TMS NTB (DWH App A, sudah
+            # diambil di langkah 2a sebagai ``ntb_row``): data nasabah, lama bekerja
+            # (SC_NTB_76), telepon kantor, handphone keluarga, Supplement. Tidak berbuat
+            # apa-apa bila scorecard tidak memuat itemnya.
+            if is_ntb_evaluation(evaluation):
+                _tms_ntb = ntb_row
+                evaluation = ensure_scorecard_items(evaluation, campaign.scorecard_text)
+                _ktp_nama = ktp_ocr_values(crud.document_ocr_by_result(db, [str(result_id)]).get(str(result_id), ())) if result_id else None
+                evaluation = apply_verification_verdicts(evaluation, _tms_ntb, _ktp_nama)
+                evaluation = apply_lama_bekerja_verdict(evaluation, _tms_ntb)
+                evaluation = apply_telepon_kantor_verdict(evaluation, _tms_ntb)
+                evaluation = apply_hp_keluarga_verdict(evaluation, _tms_ntb)
+                evaluation = apply_handphone_belum_dinilai(evaluation, _tms_ntb)
+                evaluation = apply_persetujuan_data_belum_dinilai(evaluation, _tms_ntb)
+                evaluation = apply_pdp_supplement_belum_dinilai(evaluation)
+                evaluation = apply_supplement_verdicts(evaluation, _tms_ntb)
+
             # 5c. Tempelkan JENIS REKAMAN ke tiap blok evidence. Tanpa ini evidence hanya
             # menyebut nama berkas, dan pembacanya harus mencocokkan sendiri ke kolom Call
             # Duration untuk tahu asal sebuah bukti.
@@ -795,7 +827,18 @@ def process_transcript(result_id: str):
             # Alasan SC_CL_2 untuk B29 (nama disebut tapi beda dengan NAME ONLINE) ditulis
             # SEBELUM provenance, karena yang belakangan menempelkan "- Evidence diambil
             # dari ...". Lihat ``call_ownership.stamp_agent_name_reason``.
+            # SC_NTB_2 diputuskan kode dari kemiripan nama agent vs NAME ONLINE. Production:
+            # HANYA NTB; SC_CL_2 Cashline tetap dinilai seperti sebelumnya.
+            if is_ntb_evaluation(evaluation):
+                evaluation = apply_ntb_agent_name_verdict(evaluation, name_online, name_verdict)
             evaluation = stamp_agent_name_reason(evaluation, name_online)
+            # Pengucap evidence (label ASLI PDF, bukan hasil fix_speaker_roles) ditulis
+            # SEBELUM provenance, yang memasang ulang ekor "- Evidence diambil dari ...".
+            evaluation = stamp_reason_speaker(evaluation, pdf_paths)
+            # Timestamp penyebutan nasabah yang ditulis LLM diperiksa terhadap segmen PDF
+            # mentah; yang jatuh di luar segmen pemuat nilainya diganti rentang segmen itu
+            # (tiket 080822Ha4J: blok 18 menit, LLM menebak 18:00.68 di luar blok).
+            evaluation = stamp_mention_timestamps(evaluation, pdf_paths)
             evaluation = stamp_reason_provenance(evaluation, recording_tags)
 
             # 5f. Pengecualian Mega Ultima Shield diselesaikan SEBELUM skor dihitung —
@@ -809,8 +852,9 @@ def process_transcript(result_id: str):
             #
             # NTB (5 November 2026) melewati pengecualian MUS — daftar itu milik
             # Cashline. ``resync_scores`` TETAP jalan: ``compliance.scoring`` mengenali
-            # evaluasi NTB (``is_ntb_evaluation``) dan memakai aturan NTB (varian minat,
-            # tanpa score bomb/veto), jadi JSON tersimpan sama dengan layar.
+            # evaluasi NTB (``is_ntb_evaluation``) dan memakai aturan NTB monorepo (skor
+            # aditif, score bomb 25% per kelompok gagal + veto non-tolerable), jadi JSON
+            # tersimpan sama dengan layar.
             if not ntb:
                 evaluation = stamp_mus_exemption(evaluation, customer_id)
             evaluation = resync_scores(evaluation)

@@ -121,6 +121,9 @@ DOC_KTP_HOME_ADDR_COLS = [
     "rumah-kode-pos-new",
 ]
 DOC_KTP_SINGLE_COLS = {"nama_acuan": "cust_name", "nik_acuan": "nik-new"}
+# KTP NTB acuan (baris TMS NTB dari DWH, ``reference_data.ntb``): ref field -> kolom.
+DOC_KTP_NTB_COLS = {"nik_acuan": "no-ktpkitas", "kewarganegaraan_acuan": "kewarganegaraan"}
+# Single-column cashline acuan: ref field -> cashline CSV column.
 DOC_NPWP_COLS = {"nomor_npwp_acuan": "no-npwp-new"}
 DOC_COVER_BUKU_TABUNGAN_COLS = {
     "nama_bank_acuan": "nama-bank",
@@ -446,6 +449,7 @@ def build_document_reference(
     customer_id: str,
     doc_type: str,
     db: Session,
+    campaign: str | None = None,
 ) -> tuple[dict, list[str]]:
     """Build the OCR reference ("acuan") dict for one document type + ``customer_id``.
 
@@ -463,6 +467,22 @@ def build_document_reference(
         API by ``no-ktpkitas`` dari cashline.
     """
     warnings: list[str] = []
+
+    from compliance.campaign_profile import is_ntb_campaign
+
+    if is_ntb_campaign(campaign) and doc_type == "ktp":
+        # KTP NTB: NIK dan kewarganegaraan dari baris TMS NTB DWH (``ocr_ktp_ntb``).
+        ntb_row = crud.get_tms_ntb_by_result_id(db, customer_id)
+        if ntb_row is None:
+            warnings.append(f"no TMS NTB row (DWH) with result_id == '{customer_id}'")
+        return (
+            {
+                field: ((_clean(ntb_row.get(col)) or None) if ntb_row else None)
+                for field, col in DOC_KTP_NTB_COLS.items()
+            },
+            warnings,
+        )
+
     cashline_row = crud.get_tms_cashline_by_result_id(db, customer_id)
     if cashline_row is None:
         warnings.append(f"no cashline row with result_id == '{customer_id}'")

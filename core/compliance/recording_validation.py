@@ -37,6 +37,7 @@ import logging
 import os
 import re
 
+from compliance.campaign_profile import closing_product_pattern
 from compliance.pdf_parser import (
     parse_filename_timestamp,
     parse_transcript_pdf,
@@ -65,7 +66,7 @@ logger = logging.getLogger(__name__)
 MIN_DURASI_DETIK = 180.0
 MIN_SEGMEN = 20
 
-_PRODUK = r"mega\s*cash\s*line|mega\s*ultima?t?e?\s*shield|cashline"
+_PRODUK = closing_product_pattern("cashline")
 _SETUJU = r"\bsetuju\b|\bbersedia\b|menyetujui"
 
 #: Bentuk pertanyaan persetujuan yang baku ("apakah Bapak/Ibu setuju?", "saya setuju").
@@ -102,7 +103,7 @@ def _teks(segments) -> str:
     return " ".join(str((s or {}).get("text") or "") for s in segments)
 
 
-def punya_penanda_penutup(teks: str) -> bool:
+def punya_penanda_penutup(teks: str, produk: str = None) -> bool:
     """True bila transkrip memuat Legal Statement — penanda rekaman yang MENUNTASKAN.
 
     Dua bentuk yang diterima, keduanya diukur 10/10 benar pada sampel 18 September 2026:
@@ -115,14 +116,18 @@ def punya_penanda_penutup(teks: str) -> bool:
     salah menolak rekaman utama jauh lebih mahal daripada salah menerima kandidat, karena
     kandidat masih disaring lagi oleh aturan "tertua" dan jaring pengaman di
     ``pilih_recording_utama``.
+
+    ``produk`` = regex nama produk campaign (``campaign_profile.closing_product_pattern``);
+    kosong -> pola Cashline.
     """
+    produk = produk or _PRODUK
     if not teks:
         return False
     if _SETUJU_BAKU.search(teks):
         return True
     for m in re.finditer(_SETUJU, teks, re.IGNORECASE):
         jendela = teks[max(0, m.start() - _JARAK_PRODUK) : m.end() + _JARAK_PRODUK]
-        if re.search(_PRODUK, jendela, re.IGNORECASE):
+        if re.search(produk, jendela, re.IGNORECASE):
             return True
     return False
 
@@ -149,7 +154,7 @@ def _alasan_tolak(teks: str, durasi: float, n_segmen: int) -> tuple:
     )
 
 
-def periksa_berkas(path: str, expected_ticket_id: str = None) -> dict:
+def periksa_berkas(path: str, expected_ticket_id: str = None, produk: str = None) -> dict:
     """Periksa SATU PDF. Mengembalikan ringkasan berikut vonis teknisnya.
 
     Kunci: ``path``, ``filename``, ``timestamp``, ``durasi``, ``n_segmen``, ``teks``,
@@ -205,7 +210,7 @@ def periksa_berkas(path: str, expected_ticket_id: str = None) -> dict:
             )
 
     hasil["teknis_ok"] = not hasil["masalah"]
-    hasil["penutup"] = punya_penanda_penutup(hasil["teks"])
+    hasil["penutup"] = punya_penanda_penutup(hasil["teks"], produk)
     return hasil
 
 
@@ -228,7 +233,7 @@ def _buang_duplikat(laporan: list) -> list:
     return laporan
 
 
-def pilih_recording_utama(pdf_paths, expected_ticket_id: str = None) -> dict:
+def pilih_recording_utama(pdf_paths, expected_ticket_id: str = None, campaign: str = None) -> dict:
     """Tentukan recording utama + rekaman pendamping + yang dibuang.
 
     Mengembalikan dict:
@@ -260,7 +265,7 @@ def pilih_recording_utama(pdf_paths, expected_ticket_id: str = None) -> dict:
         }
 
     laporan = _buang_duplikat(
-        [periksa_berkas(p, expected_ticket_id) for p in paths]
+        [periksa_berkas(p, expected_ticket_id, closing_product_pattern(campaign)) for p in paths]
     )
 
     def urut(r):
@@ -309,6 +314,52 @@ def pilih_recording_utama(pdf_paths, expected_ticket_id: str = None) -> dict:
         "utama": utama["path"], "pendamping": pendamping, "dibuang": dibuang,
         "laporan": laporan, "fallback": None,
     }
+
+
+def alasan_dipakai(hasil: dict) -> dict:
+    """``{nama_berkas: alasan}`` untuk rekaman yang DINILAI (utama dan pendamping).
+
+    Rekaman yang dicoret sudah membawa alasannya sendiri (``dibuang[].reason``); yang
+    dinilai dulu tidak punya, sehingga kolom Call Duration kosong persis pada berkas yang
+    paling perlu dijelaskan: kenapa rekaman INI yang jadi acuan. Alasan disusun
+    DETERMINISTIK dari hasil seleksi (bukan dari LLM): klasifikasi rekaman memang aturan
+    regex, bukan penilaian model (lihat docstring modul)."""
+    out = {}
+    utama = hasil.get("utama")
+    if not utama:
+        return out
+    fallback = hasil.get("fallback")
+    detail = {r["filename"]: r for r in hasil.get("laporan") or []}
+
+    def _ukuran(nama):
+        r = detail.get(nama)
+        if not r:
+            return ""
+        m, s = divmod(int(round(r.get("durasi") or 0)), 60)
+        return f" (durasi {m}m {s}s, {r.get('n_segmen', 0)} segmen)"
+
+    nama_utama = os.path.basename(utama)
+    if fallback == "tiket satu rekaman":
+        out[nama_utama] = "Satu-satunya rekaman pada tiket ini."
+    elif fallback:
+        out[nama_utama] = (
+            "Tidak ada rekaman yang lolos validasi, sehingga semua rekaman dikembalikan dan "
+            "yang tertua dipakai sebagai rekaman utama" + _ukuran(nama_utama) + "."
+        )
+    else:
+        out[nama_utama] = (
+            "Dipilih sebagai rekaman utama: lolos validasi, memuat penanda penutup "
+            "(Legal Statement), dan yang tertua di antara kandidat" + _ukuran(nama_utama) + "."
+        )
+    for p in hasil.get("pendamping") or []:
+        nama = os.path.basename(p)
+        out[nama] = (
+            "Rekaman pendamping: dikembalikan jaring pengaman dan dinilai bersama rekaman utama."
+            if fallback else
+            "Rekaman pendamping: lolos validasi dan memuat penanda penutup (Legal Statement); "
+            "dinilai bersama rekaman utama" + _ukuran(nama) + "."
+        )
+    return out
 
 
 def tags_by_file(hasil: dict) -> dict:

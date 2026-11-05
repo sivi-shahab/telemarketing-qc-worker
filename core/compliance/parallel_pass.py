@@ -37,6 +37,10 @@ Setelah N keluaran terkumpul:
    ``scorecard_result``) diambil UTUH dari keluaran rekaman utama. Tiap panggilan
    menilainya juga, tetapi yang jadi acuan hanya milik rekaman utama.
 
+   PENGECUALIAN (30 Oktober 2026) — ``card_holder_verification`` (semua field)
+   digabung lintas rekaman oleh ``_merge_card_holder_mentions``, supaya jawaban di
+   rekaman perbaikan ikut dihitung.
+
    PENGECUALIAN (14 September 2026) — ``cashline_data_extraction`` /
    ``cashline_data_verification``: kedua blok ini TIDAK ikut aturan "utuh dari
    utama" di atas, melainkan digabung FIELD DEMI FIELD lewat
@@ -324,6 +328,138 @@ def _apply_wajib_ulang_final_konfirmasi(
     return {**base, "scorecard_result": out_rows}, rincian
 
 
+# Blok minat NTB dan status yang berarti pelanggan SUDAH memutuskan (NOT_STATED / NOT_REACHED = belum).
+_NTB_MINAT_BLOK = {
+    "ntb_interest": ("INTERESTED", "NOT_INTERESTED"),
+    "ntb_supplement_interest": ("INTERESTED", "NOT_INTERESTED"),
+    "ntb_mus_interest": ("INTERESTED", "NOT_INTERESTED"),
+    "ntb_mus_eligibility": ("ELIGIBLE", "NOT_ELIGIBLE"),
+}
+
+
+def _apply_ntb_minat_terbaru(base, evaluations, files, timestamps, utama_idx):
+    """NTB: blok minat memakai keputusan TERAKHIR pelanggan (12 Oktober 2026).
+
+    Rekaman utama (tertua) bisa memuat penolakan sementara persetujuan datang di rekaman berikutnya
+    (tiket ``101219aXMP``: menolak 10 Sep, "Setuju" 15 Sep). Untuk tiap blok minat dipakai rekaman
+    TERBARU yang statusnya konklusif; bila tak ada, blok rekaman utama dibiarkan. Hanya blok di luar
+    ``scorecard_result`` yang diganti. Kembalikan jejak penggantian."""
+    from compliance.campaign_profile import is_ntb_evaluation
+
+    jejak = []
+    if not is_ntb_evaluation(base) or len(evaluations) < 2:
+        return jejak
+    urutan = sorted(range(len(evaluations)), key=lambda i: (timestamps[i] or datetime.min, i), reverse=True)
+    for kunci, konklusif in _NTB_MINAT_BLOK.items():
+        for i in urutan:
+            blok = evaluations[i].get(kunci)
+            status = str((blok or {}).get("status") or "").strip().upper() if isinstance(blok, dict) else ""
+            if status not in konklusif:
+                continue
+            if i != utama_idx:
+                lama = (base.get(kunci) or {}).get("status")
+                base[kunci] = copy.deepcopy(blok)
+                jejak.append({"blok": kunci, "dari_status": lama, "ke_status": status, "sumber_file": files[i]})
+            break
+    return jejak
+
+
+def _merge_ntb_extraction(evaluations, files, timestamps, utama_idx):
+    """NTB: ``ntb_application_extraction`` digabung per FIELD, sama seperti ``_merge_cashline_data``:
+    rekaman TERBARU yang punya nilai (bukan null/blank) menang, termasuk atas nilai rekaman utama
+    (12 Oktober 2026). Bila tak ada rekaman yang punya nilai, nilai utama dipakai. Kembalikan
+    ``(extraction | None, jejak)``; jejak = field yang nilai akhirnya BUKAN dari rekaman utama."""
+    if not any(isinstance(ev.get("ntb_application_extraction"), dict) for ev in evaluations):
+        return None, []
+    base = dict(evaluations[utama_idx].get("ntb_application_extraction") or {})
+    fields = list(base)
+    for ev in evaluations:
+        for f in (ev.get("ntb_application_extraction") or {}):
+            if f not in fields:
+                fields.append(f)
+    merged, jejak = {}, []
+    for f in fields:
+        kandidat = [
+            (timestamps[i] or datetime.min, i, val)
+            for i, ev in enumerate(evaluations)
+            if not _kosong(val := (ev.get("ntb_application_extraction") or {}).get(f))
+        ]
+        if not kandidat:
+            merged[f] = base.get(f)
+            continue
+        _, src, val = max(kandidat)  # tuple penuh: bila timestamp seri, index terbesar (terbaru) menang
+        merged[f] = val
+        if src != utama_idx and val != base.get(f):
+            jejak.append({"field": f, "dari_nilai": base.get(f), "ke_nilai": val, "sumber_file": files[src]})
+    return merged, jejak
+
+
+def _merge_card_holder_mentions(base: dict, evaluations: list[dict]) -> None:
+    """Gabungkan ``card_holder_verification`` LINTAS rekaman, SEMUA field (30 Oktober 2026).
+
+    Tanpa ini blok verifikasi kartu diambil UTUH dari rekaman utama (lihat docstring
+    modul nomor 3), sehingga jawaban yang baru benar di rekaman perbaikan tidak pernah
+    dihitung — tiket ``200923fExg``: utama "Nuraeni", perbaikan "Ramlah" x2 vs Ascend
+    RAMLAH. Tiap panggilan LLM hanya melihat rekamannya sendiri, jadi penggabungan harus
+    dilakukan di sini.
+
+    * Semua field: ``extracted_mentions`` dari semua rekaman digabung urut kronologis;
+      penyebutan yang sama persis (nilai, timestamp, berkas) tidak digandakan.
+    * Field STATIK (``static_similarity.STATIC_SIMILARITY``: tanggal lahir, nama ibu):
+      hanya itu — nilai, kecocokan, dan alasan dihitung ulang saat baca dari penyebutan
+      (penyebutan terbaik menang).
+    * Field DINAMIS (alamat, telepon, email, kartu suplemen, dst.): kecocokan dinilai
+      LLM per rekaman, jadi baris diambil dari rekaman TERBARU yang ``extracted_value``-nya
+      terisi (aturan yang sama dengan ``_merge_cashline_data``); bila tak satu pun terisi,
+      baris rekaman utama dipertahankan.
+    """
+    from compliance.static_similarity import STATIC_SIMILARITY
+
+    urut: list = []
+    per_field: dict = {}
+    for i, ev in enumerate(evaluations):
+        for v in ev.get("card_holder_verification") or []:
+            if isinstance(v, dict) and v.get("field"):
+                if v["field"] not in per_field:
+                    per_field[v["field"]] = []
+                    urut.append(v["field"])
+                per_field[v["field"]].append((i, v))
+    if not urut:
+        return
+
+    base_by_field = {
+        v.get("field"): v
+        for v in (base.get("card_holder_verification") or [])
+        if isinstance(v, dict) and v.get("field")
+    }
+    hasil: list = []
+    for field in urut:
+        baris_field = per_field[field]
+        gabung: list = []
+        terlihat = set()
+        for _i, v in baris_field:
+            for m in v.get("extracted_mentions") or []:
+                d = m if isinstance(m, dict) else {"value": m}
+                kunci = (str(d.get("value")), str(d.get("timestamp")), str(d.get("source_file")))
+                if kunci in terlihat:
+                    continue
+                terlihat.add(kunci)
+                gabung.append(copy.deepcopy(m))
+
+        if field in base_by_field:
+            baris = base_by_field[field]
+        else:
+            baris = copy.deepcopy(baris_field[0][1])
+        if field not in STATIC_SIMILARITY:
+            terisi = [(i, v) for i, v in baris_field if not _kosong(v.get("extracted_value"))]
+            if terisi:
+                baris = copy.deepcopy(max(terisi, key=lambda t: t[0])[1])
+        if gabung:
+            baris["extracted_mentions"] = gabung
+        hasil.append(baris)
+    base["card_holder_verification"] = hasil
+
+
 def merge_parallel(
     evaluations: list[dict],
     files: list[str],
@@ -417,6 +553,18 @@ def merge_parallel(
         base["cashline_data_extraction"] = merged_extraction
     if merged_verification is not None:
         base["cashline_data_verification"] = merged_verification
+
+    _merge_card_holder_mentions(base, evaluations)
+
+    ntb_extraction, jejak_ekstraksi = _merge_ntb_extraction(evaluations, files, timestamps, utama_idx)
+    if ntb_extraction is not None:
+        base["ntb_application_extraction"] = ntb_extraction
+        if jejak_ekstraksi:
+            base["ntb_extraction_pass"] = jejak_ekstraksi
+
+    jejak_minat = _apply_ntb_minat_terbaru(base, evaluations, files, timestamps, utama_idx)
+    if jejak_minat:
+        base["ntb_interest_pass"] = jejak_minat
 
     return base, rincian, rincian_cashline
 

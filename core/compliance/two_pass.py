@@ -34,7 +34,7 @@ dijelaskan panjang lebar di rekaman utama hanya karena tidak diulang di sana.
 import logging
 from datetime import timedelta
 
-from compliance.error_codes import CRITICAL_ITEM_CODES
+from compliance.campaign_profile import critical_item_codes
 from compliance.pdf_parser import parse_filename_timestamp
 from compliance.scoring import (
     base_ai_status,
@@ -377,6 +377,7 @@ def _resync_critical(evaluation: dict) -> dict:
     ccc = evaluation.get("critical_compliance_check")
     if not isinstance(ccc, dict) or not ccc.get("checked_items"):
         return evaluation
+    critical_codes = critical_item_codes(evaluation)
     status_by_code = {
         (r or {}).get("item_code"): (r or {}).get("status")
         for r in evaluation.get("scorecard_result") or []
@@ -384,7 +385,7 @@ def _resync_critical(evaluation: dict) -> dict:
     items, gagal = [], 0
     for it in ccc["checked_items"]:
         code = (it or {}).get("item_code")
-        if code in CRITICAL_ITEM_CODES and code in status_by_code:
+        if code in critical_codes and code in status_by_code:
             baru = "FAIL" if status_by_code[code] == "BELUM_SESUAI" else "PASS"
         else:
             baru = (it or {}).get("status")

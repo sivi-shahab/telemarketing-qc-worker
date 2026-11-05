@@ -451,36 +451,28 @@ def _codes_awaiting_document(evaluation) -> set:
 
 
 def doc_requirements_waived(result_json) -> bool:
-    """True bila kewajiban dokumen tiket ini DICABUT karena sudah ada pelanggaran
-    non-tolerable **lain** (lihat catatan di atas).
+    """Selalu False: kewajiban dokumen TIDAK PERNAH dicabut oleh pelanggaran lain.
 
-    Kata "lain" yang menanggung seluruh beban aturan ini: item scorecard yang jatuh
-    JUSTRU karena verifikasi yang sedang dibuktikan dokumen itu
-    (``_codes_awaiting_document``) TIDAK dihitung. Tanpa pengecualian itu aturannya
-    memakan dirinya sendiri — MISMATCH nama pemilik rekening menjatuhkan SC_CL_13
-    (non-tolerable), pembebasan lalu mencabut permintaan cover buku tabungan yang
-    seharusnya menyembuhkannya, dan jalur dokumen yang sengaja dibuka 31 Agustus 2026
-    tertutup lagi.
-    """
-    evaluation = _evaluation_any(result_json)
-    if not isinstance(evaluation, dict):
-        return False
-    rows = evaluation.get("scorecard_result")
-    if not isinstance(rows, list):
-        return False
-    awaiting = None
-    for item in rows:
-        it = item or {}
-        if str(it.get("tolerable") or "").strip().upper() != "NO":
-            continue
-        if str(it.get("status") or "").strip().upper() != "BELUM_SESUAI":
-            continue
-        if awaiting is None:              # dihitung sekali, hanya bila perlu
-            awaiting = _codes_awaiting_document(evaluation)
-        if str(it.get("item_code") or "").strip().upper() in awaiting:
-            continue
-        return True
+    Pembebasan 3 September 2026 (tiket yang sudah kena pelanggaran non-tolerable lain
+    tidak diminta dokumen) DIBALIK 30 Oktober 2026 atas arahan user: kewajiban dokumen
+    berdiri sendiri. Nama ibu kandung di zona abu-abu tetap meminta KK (PENDING selama
+    H+2, B09 sesudahnya) walau ada item non-tolerable lain yang gagal.
+
+    Fungsinya dipertahankan (bukan dihapus) karena dipanggil dari ``stats``,
+    ``stats_aggregate`` dan ``error_codes``; cabang "waived" di sana kini tidak pernah
+    jalan. Status akhir tiket tetap diveto item non-tolerable yang gagal
+    (``stats_aggregate._result_ai_status``), itu aturan terpisah."""
     return False
+
+
+def ntb_doc_requirements(result_json) -> list[dict]:
+    """NTB: KTP selalu wajib (aturan usia 21-65, NIK, kewarganegaraan). Bentuk sama
+    dengan ``cashline_doc_requirements``."""
+    from compliance.campaign_profile import is_ntb_evaluation
+
+    if not is_ntb_evaluation(_evaluation_any(result_json)):
+        return []
+    return [{"field": "ktp", "doc_type": "ktp", "similarity": None, "label": "KTP (usia, NIK, kewarganegaraan)"}]
 
 
 def required_doc_requirements(result_json) -> list[dict]:
@@ -499,6 +491,7 @@ def required_doc_requirements(result_json) -> list[dict]:
         return []
     return (
         card_holder_doc_requirements(result_json)
+        + ntb_doc_requirements(result_json)
         + cashline_doc_requirements(result_json)
         + mus_exception_doc_requirements(result_json)
     )
@@ -574,7 +567,9 @@ def normalize_ocr_json(doc_type: str, ocr_json):
     return out
 
 
-def build_ocr_request(doc_type: str, reference: dict | None = None) -> tuple[str, dict]:
+def build_ocr_request(
+    doc_type: str, reference: dict | None = None, campaign: str | None = None
+) -> tuple[str, dict]:
     """Build the Mistral OCR request for ``doc_type``.
 
     Returns ``(prompt, schema)`` where ``prompt`` is the per-type prompt with the
@@ -593,7 +588,14 @@ def build_ocr_request(doc_type: str, reference: dict | None = None) -> tuple[str
     """
     from prompt._common import DOC_KIND_INSTRUCTION
 
-    module = load_prompt_module(doc_type)
+    from compliance.campaign_profile import is_ntb_campaign
+
+    if is_ntb_campaign(campaign) and doc_type == "ktp":
+        import importlib
+
+        module = importlib.import_module("prompt.ocr_ktp_ntb")
+    else:
+        module = load_prompt_module(doc_type)
     prompt = module.build_prompt(reference or {})
     if doc_type in _DOC_KIND_EXPECTED:
         prompt += DOC_KIND_INSTRUCTION

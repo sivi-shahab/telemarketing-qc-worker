@@ -398,9 +398,129 @@ def similarity_nama(reference, candidate) -> "float | None":
 
 
 # field -> fungsi similarity-nya.
+# ATURAN "ASCEND TIDAK LENGKAP" (28 Oktober 2026, tiket 071043hfNF: Ascend "ENOK",
+# nasabah "Nok Hasanah" dua kali = 18-30%). Direvisi 2 November 2026 atas arahan user.
+# Ascend kadang hanya memuat sebagian nama; kata TAMBAHAN yang disebut nasabah di luar
+# jumlah kata Ascend tidak perlu dibandingkan. Ucapan dipotong menjadi jendela
+# berurutan sebanyak JUMLAH KATA ASCEND, tiap jendela dihitung dengan similarity biasa
+# (``similarity_nama``), diambil yang tertinggi. Nilainya apa adanya, BUKAN otomatis 100:
+# "ENOK" vs "Nok" = 75, masuk zona abu-abu 50-<80 (PENDING + KK). Acuan Ascend tidak
+# dimanipulasi dan aturan ini hanya bisa MENAIKKAN nilai. Hanya dipasang pada
+# ``nama_ibu_kandung`` (``similarity_nama`` sendiri dipakai juga oleh NTB).
+
+
+def similarity_nama_jendela(reference, candidate) -> "float | None":
+    """Similarity terbaik antara ``reference`` dan tiap jendela berurutan ucapan yang
+    panjangnya sama dengan jumlah kata ``reference``. None bila ucapan TIDAK punya
+    kata lebih banyak dari acuan (jalur skor biasa)."""
+    ref_tokens = _norm_name(reference).split()
+    cand_tokens = _norm_name(candidate).split()
+    n = len(ref_tokens)
+    if n == 0 or len(cand_tokens) <= n:
+        return None
+    best = None
+    for i in range(len(cand_tokens) - n + 1):
+        sc = similarity_nama(reference, " ".join(cand_tokens[i:i + n]))
+        if sc is not None and (best is None or sc > best):
+            best = sc
+    return best
+
+
+def ascend_tidak_lengkap(reference, candidate) -> bool:
+    """True bila ucapan lebih panjang dari Ascend DAN membandingkan per jendela
+    kata menghasilkan nilai LEBIH TINGGI daripada membandingkan ucapan utuh."""
+    win = similarity_nama_jendela(reference, candidate)
+    if win is None:
+        return False
+    return win > (similarity_nama(reference, candidate) or 0)
+
+
+# Kata kode ejaan (alfabet fonetik NATO + dua kata yang lazim terdengar di rekaman Bank Mega:
+# "London" untuk L dan "Mama" untuk M, lihat tiket 011216CB5w) beserta ragam ejaan ASR.
+_SPELLING_CODE_WORDS = frozenset({
+    "alfa", "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel",
+    "india", "juliet", "juliett", "kilo", "lima", "mike", "november", "oscar", "papa",
+    "quebec", "romeo", "sierra", "tango", "uniform", "victor", "whiskey", "whisky",
+    "xray", "yankee", "zulu", "london", "mama",
+})
+_SPELLED_MIN_LETTERS = 3
+
+
+def ascend_dieja_per_kata(reference, candidate) -> bool:
+    """True bila ``candidate`` adalah EJAAN KODE KATA dari ``reference`` (28 Oktober 2026,
+    tiket 011216CB5w: Ascend "JANE", nasabah "Jakarta Alfa November Echo" dua kali).
+
+    Nasabah menjawab dengan mengeja nama ibunya huruf demi huruf memakai satu kata per
+    huruf; huruf pertama tiap kata adalah hurufnya. Kemiripan string menilainya 15%
+    padahal jawabannya persis. Syarat, semuanya harus terpenuhi supaya kebetulan tidak
+    lolos ("Ana Nina Indah" bukan ejaan "ANI"):
+
+    * jumlah kata = jumlah huruf di Ascend (minimal ``_SPELLED_MIN_LETTERS``);
+    * huruf pertama tiap kata, berurutan, = huruf Ascend;
+    * minimal separuh kata (dan minimal dua) adalah kata kode ejaan, sehingga satu kata
+      pengganti seperti "Jakarta" untuk J tetap diterima.
+
+    Seperti ``ascend_tidak_lengkap``, aturan ini hanya bisa menaikkan nilai."""
+    letters = re.sub(r"[^a-z]", "", _norm_name(reference))
+    words = re.findall(r"[a-z]+", _norm_name(candidate))
+    if len(letters) < _SPELLED_MIN_LETTERS or len(words) != len(letters):
+        return False
+    if "".join(w[0] for w in words) != letters:
+        return False
+    code = sum(1 for w in words if w in _SPELLING_CODE_WORDS)
+    return code >= 2 and code * 2 >= len(words)
+
+
+_ALIAS_SPLIT = re.compile(r"\s+alias\s+", re.IGNORECASE)
+
+
+def ascend_alias_parts(reference) -> list:
+    """Nama-nama di acuan Ascend yang berbentuk "XX ALIAS YY" (28 Oktober 2026, tiket
+    060859q2UO: "HO SIU LANG ALIAS LANNY"). Satu nama ibu bisa tercatat dengan dua nama;
+    menyebut SALAH SATUNYA sah. Mengembalikan ``[XX, YY]``, atau ``[]`` bila acuan
+    tidak memuat kata ALIAS (atau salah satu sisinya kosong)."""
+    parts = [p.strip() for p in _ALIAS_SPLIT.split(str(reference or ""))]
+    if len(parts) < 2 or any(not p for p in parts):
+        return []
+    return parts
+
+
+def _similarity_nama_ibu_single(reference, candidate) -> "float | None":
+    score = similarity_nama(reference, candidate)
+    if ascend_dieja_per_kata(reference, candidate):
+        return 100.0
+    win = similarity_nama_jendela(reference, candidate)
+    if win is not None and (score is None or win > score):
+        return win
+    return score
+
+
+def best_alias_part(reference, candidate) -> "tuple | None":
+    """``(nama_acuan, similarity)`` bagian ALIAS yang paling cocok dengan
+    ``candidate``; None bila acuan tidak memuat ALIAS."""
+    best = None
+    for part in ascend_alias_parts(reference):
+        sc = _similarity_nama_ibu_single(part, candidate)
+        if sc is not None and (best is None or sc > best[1]):
+            best = (part, sc)
+    return best
+
+
+def similarity_nama_ibu(reference, candidate) -> "float | None":
+    """``similarity_nama`` untuk nama ibu kandung + aturan "Ascend tidak lengkap"
+    (ucapan lebih panjang dari Ascend dibandingkan per jendela kata sepanjang Ascend) + aturan ALIAS (acuan
+    "XX ALIAS YY": menyebut salah satu nama saja sudah cukup; diambil nilai TERTINGGI
+    antara acuan utuh dan tiap bagiannya, jadi hanya bisa menaikkan)."""
+    values = [v for v in (_similarity_nama_ibu_single(reference, candidate),) if v is not None]
+    alias = best_alias_part(reference, candidate)
+    if alias is not None:
+        values.append(alias[1])
+    return max(values) if values else None
+
+
 STATIC_SIMILARITY = {
     "tanggal_lahir": similarity_tanggal_lahir,
-    "nama_ibu_kandung": similarity_nama,
+    "nama_ibu_kandung": similarity_nama_ibu,
 }
 
 

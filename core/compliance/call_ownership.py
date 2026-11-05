@@ -49,6 +49,7 @@ import collections
 import os
 import re
 
+from compliance.campaign_profile import AGENT_NAME_ITEM_CODES
 from compliance.static_similarity import levenshtein
 
 # Ambang kemiripan nama (persen) untuk mengenali agent yang di-assign pada sebuah
@@ -493,6 +494,66 @@ def agent_name_verdict(pdf_texts: dict, name_online: str, roster_names=(),
 # ``filter_calls_by_agent`` (kepemilikan panggilan, lihat docstring modul ini).
 
 
+NTB_AGENT_NAME_ITEM = "SC_NTB_2"
+
+
+def apply_ntb_agent_name_verdict(evaluation: dict, name_online, name_check=None) -> dict:
+    """NTB dan Cashline (28 Oktober 2026): ``SC_NTB_2`` / ``SC_CL_2`` diputuskan dari kemiripan
+    ``agent_name_said`` dengan NAME ONLINE (aturan nama agent harus sama antar campaign).
+
+    Dua kasus gagal yang dibedakan (konfirmasi user):
+      1. agent tidak memperkenalkan diri sama sekali  -> ``agent_name_said`` kosong -> status LLM
+         dibiarkan (B12);
+      2. agent memperkenalkan diri tetapi bukan nama on-air -> ``agent_name_said`` terisi, kemiripan
+         < ``NAME_MATCH_MIN`` -> ``BELUM_SESUAI`` (B29).
+    Kemiripan >= ambang (mis. "Riska" vs FRISKA, "Yuda" vs YUDHA: selisih ejaan ASR) -> ``SESUAI``.
+    Yang dibandingkan nama hasil ekstraksi LLM (bukan regex ``detect_agent_names``, yang dulu salah
+    menangkap kata lain; lihat catatan 18 September 2026 di atas). NAME ONLINE kosong -> tidak
+    berbuat apa-apa. Hanya menyentuh baris ``AGENT_NAME_ITEM_CODES`` (SC_CL_2, SC_NTB_2, SC_RI_2).
+
+    Ekstraksi LLM kadang keliru (tiket 0105265aTJ: ``agent_name_said`` terisi nama NASABAH). Karena itu
+    ``name_check`` (``agent_name_verdict``: NAME ONLINE dicari di transkrip oleh kode) ikut dipakai:
+    SESUAI bila ``agent_name_said`` cocok, atau bila ``agent_name_said`` ternyata nama nasabah (salah
+    ekstrak) dan ``name_check`` cocok; selain itu BELUM_SESUAI."""
+    if not isinstance(evaluation, dict):
+        return evaluation
+    disebut = str(evaluation.get("agent_name_said") or "").strip()
+    on_air = str(name_online or "").strip()
+    rows = evaluation.get("scorecard_result")
+    if not disebut or not on_air or not isinstance(rows, list):
+        return evaluation
+    skor = max([name_similarity(disebut, on_air)] + [name_similarity(w, on_air) for w in disebut.split()])
+    cocok = skor >= NAME_MATCH_MIN
+    alasan = (f"Agent memperkenalkan diri sebagai \"{disebut}\", sesuai nama on-air "
+              f"\"{on_air}\" ({skor:.0f}%).")
+    # Pengecekan kode hanya jadi cadangan bila ekstraksi LLM jelas keliru, yaitu "nama agent" yang
+    # diisi ternyata nama NASABAH. Tanpa syarat itu cadangan terlalu longgar: ia lulus bila kata
+    # yang mirip NAME ONLINE muncul DI MANA SAJA di transkrip (mis. 130957fnu6: agent "Daffa",
+    # on-air ZAFRAN, tetapi "jafran" muncul di tempat lain).
+    nasabah = str(evaluation.get("customer_full_name") or "").split()
+    salah_ekstrak = any(name_similarity(w, n) >= NAME_MATCH_MIN for w in disebut.split() for n in nasabah)
+    if not cocok and salah_ekstrak and isinstance(name_check, dict) and name_check.get("match") is True:
+        cocok = True
+        alasan = str(name_check.get("reason") or "").strip() or (
+            f"Nama on-air \"{on_air}\" ditemukan di transkrip ({float(name_check.get('score') or 0):.0f}%).")
+    for row in rows:
+        if not isinstance(row, dict) or row.get("item_code") not in AGENT_NAME_ITEM_CODES:
+            continue
+        if cocok:
+            row["status"] = "SESUAI"
+            try:
+                w = float(row.get("weight"))
+                row["item_score"] = int(w) if w == int(w) else w
+            except (TypeError, ValueError):
+                row["item_score"] = 0
+            row["reason"] = alasan
+            row["point_of_improvement"] = None
+        else:
+            row["status"] = "BELUM_SESUAI"
+            row["item_score"] = 0
+    return evaluation
+
+
 def stamp_agent_name_reason(evaluation: dict, name_online) -> dict:
     """Tulis alasan SC_CL_2 yang menyebut KEDUA nama saat error code-nya B29.
 
@@ -527,7 +588,7 @@ def stamp_agent_name_reason(evaluation: dict, name_online) -> dict:
     out, berubah = [], False
     for row in rows:
         r = row if isinstance(row, dict) else {}
-        if r.get("item_code") == "SC_CL_2" and str(r.get("status") or "").upper() == "BELUM_SESUAI":
+        if r.get("item_code") in AGENT_NAME_ITEM_CODES and str(r.get("status") or "").upper() == "BELUM_SESUAI":
             if r.get("reason") != alasan:
                 out.append({**r, "reason": alasan})
                 berubah = True
