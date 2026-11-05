@@ -18,6 +18,7 @@ from functools import lru_cache
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from compliance.campaign_profile import is_ntb_campaign
 from services.s3_buckets import build_minio_client
 from compliance.documents import build_ocr_request, normalize_ocr_json
 from compliance.ocr import image_bytes_to_pdf, ocr_document
@@ -82,6 +83,11 @@ def process_document(result_id: str):
                 "result %s has no source_files; OCR runs without bank reference", result_id
             )
 
+        # Campaign NTB: KTP dibandingkan pada NIK dan kewarganegaraan dari baris TMS NTB
+        # (DWH, ``crud.get_tms_ntb_by_result_id``). NTB dikenali dari nama campaign tiket
+        # (``NTB_CAMPAIGNS``), sama dengan gerbang data acuan di ``process_transcript``.
+        campaign = result.campaign if (result is not None and is_ntb_campaign(result.campaign)) else None
+
         documents = crud.list_documents(db, result_id)
         for doc in documents:
             if doc.status != "pending":
@@ -102,13 +108,14 @@ def process_document(result_id: str):
                         customer_id,
                         doc.doc_type,
                         db,
+                        campaign,
                     )
                     for warn in warns:
                         logger.warning(
                             "doc reference (%s / %s): %s", doc_id, doc.doc_type, warn
                         )
 
-                prompt, schema = build_ocr_request(doc.doc_type, reference)
+                prompt, schema = build_ocr_request(doc.doc_type, reference, campaign)
                 ocr_json = ocr_document(
                     pdf_bytes=pdf_bytes,
                     prompt=prompt,

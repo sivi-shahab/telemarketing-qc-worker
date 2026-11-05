@@ -17,6 +17,11 @@ Sources:
 import re
 from datetime import datetime
 
+from compliance.campaign_profile import (
+    AGENT_NAME_ITEM_CODES,
+    CASHLINE_CRITICAL_ITEM_CODES,
+    critical_item_codes,
+)
 from compliance.riplay import check_tms_against_tnc
 
 # --- Source groups ----------------------------------------------------------
@@ -353,6 +358,17 @@ CATEGORY_ERROR_CODES = [
     {"categories": ["Legal Statement Mega Cashline", "Legal Statement Mega Ultima Shield"], "code": "B18"},
 ]
 
+# Reinstate (28 Oktober 2026): kategori scorecard Reinstate memakai nama sendiri/bersama NTB, jadi
+# turunan kodenya dikunci pada AWALAN kode item (``SC_RI_``), bukan pada nama kategori — kategori
+# bernama sama di NTB ("Final Konfirmasi Basic", dst.) tetap tanpa turunan seperti sebelumnya.
+# Analog Cashline: Final Konfirmasi -> B10, Legal Statement -> B18, Greeting -> B12.
+REINSTATE_ITEM_PREFIX = "SC_RI_"
+REINSTATE_CATEGORY_ERROR_CODES = [
+    {"categories": ["Final Konfirmasi Basic", "Final Konfirmasi Supplement"], "code": "B10"},
+    {"categories": ["Greeting"], "code": "B12"},
+    {"categories": ["Legal Statement Basic", "Legal Statement Supplement"], "code": "B18"},
+]
+
 # Error codes currently surfaced in the Error Code table. To keep error_codes.py in
 # sync with the KB/prompt, only this set is shown for now; every other code the LLM
 # might emit (B11, B13, B15, B19, B20, B24, B26, ...) is HIDDEN, not deleted.
@@ -386,9 +402,13 @@ _AGENT_RE = re.compile(r"^(\s*Agent\s+)(.*)$", re.IGNORECASE)
 
 
 # --- Helpers ----------------------------------------------------------------
-def category_error_code(category):
-    """Return the derived error code for a scorecard category, or None."""
-    for rule in CATEGORY_ERROR_CODES:
+def category_error_code(category, item_code=None):
+    """Return the derived error code for a scorecard category, or None.
+
+    ``item_code`` (opsional) memilih tabel Reinstate untuk item ``SC_RI_*``."""
+    rules = (REINSTATE_CATEGORY_ERROR_CODES
+             if str(item_code or "").startswith(REINSTATE_ITEM_PREFIX) else CATEGORY_ERROR_CODES)
+    for rule in rules:
         if category in rule["categories"]:
             return rule["code"]
     return None
@@ -1246,14 +1266,14 @@ def build_error_code_table(evaluation: dict) -> list:
         # dari derivasi kategori biasa. Menang atas ``category_error_code`` bila ada
         # (tidak ada pemanggil aktif saat ini — dipertahankan untuk kasus serupa
         # nanti, lihat riwayat B29 di bawah).
-        code = (item or {}).get("error_code_override") or category_error_code((item or {}).get("category"))
+        code = (item or {}).get("error_code_override") or category_error_code((item or {}).get("category"), (item or {}).get("item_code"))
         # SC_CL_2 (Greeting — nama on-air, 18 September 2026): B12 (default kategori
         # Greeting) berarti "agent sama sekali tidak menyebutkan nama"; B29 berarti
         # "menyebut SUATU nama tetapi tidak sesuai NAME ONLINE". Dulu dibedakan lewat
         # deteksi regex Python (``call_ownership.apply_agent_name_verdict``, terbukti
         # rapuh — tiket 020455CL3A) — sekarang dibedakan dari ``agent_name_said``
         # yang diisi LLM sendiri (non-kosong = ada nama disebut = B29).
-        if (item or {}).get("item_code") == "SC_CL_2" and (evaluation.get("agent_name_said") or "").strip():
+        if (item or {}).get("item_code") in AGENT_NAME_ITEM_CODES and (evaluation.get("agent_name_said") or "").strip():
             code = "B29"
         if not code:
             continue
@@ -3572,7 +3592,9 @@ def apply_added_card_holder_appeals(evaluation: dict, added_appeals: list) -> di
 # total masih berskor 135/150, terbaca "nyaris sempurna" padahal bank menganggapnya
 # kegagalan verifikasi. Vonisnya sendiri memang sudah Not Qualified lewat veto
 # non-tolerable, jadi yang diperbaiki aturan ini adalah ANGKANYA, bukan statusnya.
-CRITICAL_ITEM_CODES = ("SC_CL_4", "SC_CL_23_1", "SC_CL_23_2", "SC_CL_37", "SC_CL_24")
+# Daftar Cashline (nilai tetap); NTB punya daftar sendiri — pakai
+# ``critical_item_codes(evaluation)`` bila evaluasinya bisa milik campaign lain.
+CRITICAL_ITEM_CODES = CASHLINE_CRITICAL_ITEM_CODES
 
 
 def _sync_critical_compliance(evaluation: dict, added_appeals: list) -> dict:
@@ -3608,11 +3630,12 @@ def _sync_critical_compliance(evaluation: dict, added_appeals: list) -> dict:
         for a in (added_appeals or [])
         if _appeal_attr(a, "add_source") == SOURCE_SCORECARD and _appeal_attr(a, "item_code")
     }
+    critical_codes = critical_item_codes(evaluation)
     belum_critical = {
         (it or {}).get("item_code")
         for it in (evaluation.get("scorecard_result") or [])
         if (it or {}).get("status") == "BELUM_SESUAI"
-        and (it or {}).get("item_code") in CRITICAL_ITEM_CODES
+        and (it or {}).get("item_code") in critical_codes
     }
     if not added_codes and not belum_critical:
         return evaluation
@@ -3637,7 +3660,7 @@ def _sync_critical_compliance(evaluation: dict, added_appeals: list) -> dict:
     # scorecard yang bersangkutan supaya panel Critical Compliance menyebut kewajiban
     # yang sama dengan scorecard, bukan teks buatan sendiri.
     present = {(it or {}).get("item_code") for it in items}
-    for code in CRITICAL_ITEM_CODES:
+    for code in critical_codes:
         if code in present or code not in (added_codes | belum_critical):
             continue
         src = next(

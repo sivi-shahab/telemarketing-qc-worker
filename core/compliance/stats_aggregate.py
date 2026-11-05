@@ -37,6 +37,7 @@ from sqlalchemy import false, func
 
 from sales_lookup import NEW_JOINER_THRESHOLD_DAYS, active_sales_map
 from compliance.badwords import has_badword
+from compliance.campaign_profile import is_ntb_evaluation
 from compliance.error_codes import (
     _appeal_kind,
     added_appeals_only,
@@ -1318,6 +1319,11 @@ def _missing_docs_map(
         f = flags.get(cid or "", {})
         if doc_requirements_waived(_normalized_json(eval_by_id.get(rid))):
             out[rid] = False
+            continue
+        # NTB: KTP selalu wajib (usia 21-65, NIK, kewarganegaraan), tidak ada band TMS.
+        _nj = _normalized_json(eval_by_id.get(rid))
+        if isinstance(_nj, dict) and is_ntb_evaluation(_nj.get("evaluation")):
+            out[rid] = "ktp" not in uploaded
             continue
         needs = any(f.get(k) for k in ("kantor", "rumah", "npwp", "nik"))
         if not needs and cid:

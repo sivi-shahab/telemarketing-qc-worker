@@ -465,6 +465,16 @@ def doc_requirements_waived(result_json) -> bool:
     return False
 
 
+def ntb_doc_requirements(result_json) -> list[dict]:
+    """NTB: KTP selalu wajib (aturan usia 21-65, NIK, kewarganegaraan). Bentuk sama
+    dengan ``cashline_doc_requirements``."""
+    from compliance.campaign_profile import is_ntb_evaluation
+
+    if not is_ntb_evaluation(_evaluation_any(result_json)):
+        return []
+    return [{"field": "ktp", "doc_type": "ktp", "similarity": None, "label": "KTP (usia, NIK, kewarganegaraan)"}]
+
+
 def required_doc_requirements(result_json) -> list[dict]:
     """SELURUH dokumen pendukung yang diminta hasil evaluasi — band verifikasi
     statik (KK/KTP) DITAMBAH cashline (cover buku tabungan).
@@ -481,6 +491,7 @@ def required_doc_requirements(result_json) -> list[dict]:
         return []
     return (
         card_holder_doc_requirements(result_json)
+        + ntb_doc_requirements(result_json)
         + cashline_doc_requirements(result_json)
         + mus_exception_doc_requirements(result_json)
     )
@@ -556,7 +567,9 @@ def normalize_ocr_json(doc_type: str, ocr_json):
     return out
 
 
-def build_ocr_request(doc_type: str, reference: dict | None = None) -> tuple[str, dict]:
+def build_ocr_request(
+    doc_type: str, reference: dict | None = None, campaign: str | None = None
+) -> tuple[str, dict]:
     """Build the Mistral OCR request for ``doc_type``.
 
     Returns ``(prompt, schema)`` where ``prompt`` is the per-type prompt with the
@@ -575,7 +588,14 @@ def build_ocr_request(doc_type: str, reference: dict | None = None) -> tuple[str
     """
     from prompt._common import DOC_KIND_INSTRUCTION
 
-    module = load_prompt_module(doc_type)
+    from compliance.campaign_profile import is_ntb_campaign
+
+    if is_ntb_campaign(campaign) and doc_type == "ktp":
+        import importlib
+
+        module = importlib.import_module("prompt.ocr_ktp_ntb")
+    else:
+        module = load_prompt_module(doc_type)
     prompt = module.build_prompt(reference or {})
     if doc_type in _DOC_KIND_EXPECTED:
         prompt += DOC_KIND_INSTRUCTION

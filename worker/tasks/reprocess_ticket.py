@@ -42,6 +42,7 @@ from services.s3_buckets import CopySource
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from compliance.campaign_profile import is_ntb_campaign
 from db import crud
 from db.crud import REFERENCE_RETRY_USERNAME
 from worker.celery_app import celery_app
@@ -75,6 +76,30 @@ def _copy_transcripts(client, bucket: str, src_id: str, dst_id: str) -> int:
         if not name.lower().endswith(".pdf"):
             continue
         client.copy_object(bucket, f"{dst_id}/{name}", CopySource(bucket, obj.object_name))
+        copied += 1
+    return copied
+
+
+def _copy_documents(db, client, bucket: str, src_id: str, dst_id: str) -> int:
+    """Salin dokumen unggahan (KTP dan lain-lain) beserta hasil OCR-nya dari row lama ke row baru.
+
+    Hanya dipakai campaign NTB: nilai KTP hasil OCR ikut menentukan verifikasi dan score bomb KTP saat
+    tiket diproses, jadi row baru harus sudah memegang dokumennya sebelum ``process_transcript`` jalan.
+    Row lama dibuang (beserta barisnya) setelah row baru ``done``, tanpa ini dokumen ikut hilang.
+    Objek disalin, bukan dipindah, supaya row lama utuh bila reproses gagal."""
+    copied = 0
+    for doc in crud.list_documents(db, src_id):
+        name = (doc.object_path or "").rsplit("/", 1)[-1]
+        if not name:
+            continue
+        new_path = f"{dst_id}/{name}"
+        client.copy_object(bucket, new_path, CopySource(bucket, doc.object_path))
+        new_doc = crud.create_document(
+            db, result_id=dst_id, doc_type=doc.doc_type, filename=doc.filename,
+            object_path=new_path, mime_type=doc.mime_type,
+        )
+        if doc.status == "done" and doc.ocr_json is not None:
+            crud.set_document_result(db, new_doc.id, doc.ocr_json)
         copied += 1
     return copied
 
@@ -158,6 +183,8 @@ def reprocess_ticket(item_id: int):
             )
         new_result.transcript_path = f"{new_result_id}/"
         db.commit()
+        if is_ntb_campaign(source.campaign):
+            _copy_documents(db, client, settings.minio_bucket_documents, str(source.id), new_result_id)
 
         # Dijalankan SEGARIS: task ini memang bertugas menunggui satu tiket sampai
         # tuntas, dan penghapusan row lama harus terjadi setelah evaluasinya jadi.
@@ -211,6 +238,9 @@ def reprocess_ticket(item_id: int):
                 crud.delete_results_by_ids(db, [new_result_id])
                 _remove_transcripts(
                     _minio_client(), settings.minio_bucket_transcripts, new_result_id
+                )
+                _remove_transcripts(
+                    _minio_client(), settings.minio_bucket_documents, new_result_id
                 )
             except Exception:  # pragma: no cover — best effort
                 logger.exception("gagal membuang row baru %s", new_result_id)
