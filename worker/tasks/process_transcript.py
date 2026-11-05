@@ -807,22 +807,20 @@ def process_transcript(result_id: str):
             # — SELALU. Tanpa ini JSON tersimpan kadang membawa angka mentah LLM yang tidak
             # mengenal iris 10% item non-tolerable; lihat ``two_pass.resync_scores``.
             #
-            # NTB (5 November 2026) melewati KEDUANYA: daftar pengecualian MUS adalah
-            # milik Cashline, dan rumus ``compliance.scoring`` masih berlogika Cashline
-            # (minat ``cashline_interest``/``mus_interest``, iris 10% non-tolerable —
-            # padahal prompt NTB v11 mematikan score bomb). Skor tersimpan tiket NTB
-            # adalah angka prompt NTB apa adanya sampai scoring NTB dibuat (spec
-            # 2026-11-05-results-kolom-per-campaign §4).
+            # NTB (5 November 2026) melewati pengecualian MUS — daftar itu milik
+            # Cashline. ``resync_scores`` TETAP jalan: ``compliance.scoring`` mengenali
+            # evaluasi NTB (``is_ntb_evaluation``) dan memakai aturan NTB (varian minat,
+            # tanpa score bomb/veto), jadi JSON tersimpan sama dengan layar.
             if not ntb:
                 evaluation = stamp_mus_exemption(evaluation, customer_id)
-                evaluation = resync_scores(evaluation)
+            evaluation = resync_scores(evaluation)
 
             # [DIPERTAHANKAN dari produksi — A@HEAD menjatuhkannya saat f672425
             # menghidupkan lagi PARALEL] Mode paralel: ``critical_compliance_check``
             # diambil UTUH dari rekaman utama, tetapi ``merge_parallel`` sudah menaikkan
             # sebagian ``scorecard_result`` dari rekaman lain. Tanpa ini item kritis yang
             # sudah SESUAI di rekaman perbaikan tetap ditagih ``-(maximum_score / 4)``.
-            if paralel and not ntb:
+            if paralel:
                 evaluation = resync_scores(_resync_critical(evaluation))
 
         tahap.catat("gabung_dan_skor")

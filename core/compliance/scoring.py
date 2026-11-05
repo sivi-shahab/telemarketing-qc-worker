@@ -69,6 +69,108 @@ def _numeric_or_none(value):
     return int(value) if value == int(value) else value
 
 
+# --- Campaign New To Bank Eksternal (5 November 2026) -------------------------------
+#
+# Evaluasi NTB (prompt ``prompt_ntb_v11``) dikenali dari BENTUKNYA, bukan dari nama
+# campaign: hanya prompt NTB yang menulis objek ``ntb_interest``. Modul ini sengaja
+# bekerja dari satu objek ``evaluation`` saja (lihat ``mus_exempt``), dan evaluasi
+# Cashline tidak pernah membawa key itu — jadi seluruh cabang NTB di bawah tidak
+# bisa menyentuh tiket Cashline.
+#
+# Aturan skor NTB (prompt v11 + keputusan user 5 November 2026):
+#
+# * Skor maksimal ADITIF dari minat: kartu utama 100, + 25 bila Kartu Tambahan
+#   (Supplement) diajukan, + 50 bila Mega Ultima Shield diikuti dan Health
+#   Declaration tidak NOT_ELIGIBLE. Passing grade tetap 90% dari skor maksimal.
+# * Skor scorecard = jumlah poin item yang BERLAKU, PERSIS seperti prompt
+#   ("sum the item_score of every item"): SESUAI = bobot penuh, BELUM_SESUAI = 0
+#   (kredit parsial dihormati), TIDAK_DINILAI = 0. Item TIDAK_DINILAI kondisional
+#   di kategori Basic (mis. poin MPC tidak ditanyakan, source code) memang ikut
+#   bernilai 0 — keputusan user: ikuti prompt v11.
+# * Kategori Supplement / Mega Ultima Shield yang tidak berlaku untuk varian tiket
+#   ini TIDAK dihitung sama sekali (tidak di penyebut, tidak di pembilang).
+# * ZERO-SCORE: kartu utama bukan INTERESTED -> skor 0, maksimal 100, FAIL.
+# * TANPA score bomb (prompt v11 menonaktifkannya) dan TANPA veto non-tolerable:
+#   PASS/FAIL murni skor >= passing grade (keputusan user).
+NTB_BASIC_SCORE = 100
+NTB_SUPL_SCORE = 25
+NTB_MUS_SCORE = 50
+
+
+def is_ntb_evaluation(evaluation) -> bool:
+    """True bila ``evaluation`` ditulis prompt NTB (membawa objek ``ntb_interest``)."""
+    return isinstance(evaluation, dict) and isinstance(evaluation.get("ntb_interest"), dict)
+
+
+def _status_of(evaluation: dict, key: str) -> str:
+    return str(((evaluation or {}).get(key) or {}).get("status") or "").strip().upper()
+
+
+def ntb_flags(evaluation: dict) -> "tuple[bool, bool, bool]":
+    """``(basic, supl_applies, mus_applies)`` — definisi NTB VARIANT prompt v11."""
+    basic = _status_of(evaluation, "ntb_interest") == "INTERESTED"
+    supl = _status_of(evaluation, "ntb_supplement_interest") == "INTERESTED"
+    mus = (_status_of(evaluation, "ntb_mus_interest") == "INTERESTED"
+           and _status_of(evaluation, "ntb_mus_eligibility") != "NOT_ELIGIBLE")
+    return basic, supl, mus
+
+
+def ntb_item_applies(item, supl: bool, mus: bool) -> bool:
+    """Apakah item scorecard NTB berlaku untuk varian ini. Kategori pembawa
+    ``applies_to`` di scorecard NTB v4 dikenali dari namanya: "... Supplement" ->
+    SUPL, "... Mega Ultima Shield" -> MUS; selain itu item Basic (selalu berlaku)."""
+    cat = str((item or {}).get("category") or "").strip().casefold()
+    if "mega ultima shield" in cat:
+        return mus
+    if "supplement" in cat:
+        return supl
+    return True
+
+
+def ntb_campaign_interest(evaluation: dict) -> list:
+    """Label Campaign Interest NTB, DITURUNKAN dari objek minat (bukan string
+    ``campaign_interest`` LLM — prompt v11 memakai dua kosakata berbeda untuknya).
+    Kosong bila kartu utama tidak diminati (ZERO-SCORE)."""
+    basic, supl, mus = ntb_flags(evaluation)
+    if not basic:
+        return []
+    out = ["Kartu Kredit Bank Mega"]
+    if supl:
+        n = _to_num(((evaluation or {}).get("ntb_supplement_interest") or {}).get("jumlah_kartu_tambahan"))
+        out.append(f"Kartu Tambahan ({int(n)})" if n else "Kartu Tambahan")
+    if mus:
+        out.append("Mega Ultima Shield")
+    return out
+
+
+def _ntb_max_score(evaluation: dict):
+    basic, supl, mus = ntb_flags(evaluation)
+    if not basic:
+        return NTB_BASIC_SCORE
+    total = NTB_BASIC_SCORE + (NTB_SUPL_SCORE if supl else 0) + (NTB_MUS_SCORE if mus else 0)
+    return int(total) if total == int(total) else total
+
+
+def _ntb_item_earned(item) -> float:
+    st = str((item or {}).get("status") or "").strip().upper()
+    weight = _to_num((item or {}).get("weight")) or 0
+    if st == "SESUAI":
+        return weight
+    if st == "BELUM_SESUAI":
+        earned = _to_num((item or {}).get("item_score"))
+        return earned if earned is not None and 0 < earned < weight else 0
+    return 0  # TIDAK_DINILAI / status lain
+
+
+def _ntb_scorecard_score(evaluation: dict):
+    basic, supl, mus = ntb_flags(evaluation)
+    if not basic:
+        return 0
+    total = sum(_ntb_item_earned(it) for it in (evaluation.get("scorecard_result") or [])
+                if ntb_item_applies(it, supl, mus))
+    return int(total) if total == int(total) else total
+
+
 def no_product_interest(evaluation: dict) -> bool:
     """True bila nasabah TIDAK berminat pada Mega Cashline MAUPUN Mega Ultima Shield.
 
@@ -88,6 +190,10 @@ def no_product_interest(evaluation: dict) -> bool:
     False): tanpa datanya, "tidak berminat" adalah tebakan, dan menebak di sini
     akan menolkan tiket yang tidak bersalah.
     """
+    if is_ntb_evaluation(evaluation):
+        # NTB: tanpa minat pada KARTU UTAMA tidak ada produk (Supplement & MUS
+        # melekat pada kartu utama).
+        return not ntb_flags(evaluation)[0]
     cashline = evaluation.get("cashline_interest")
     mus = evaluation.get("mus_interest")
     if not isinstance(cashline, dict) and not isinstance(mus, dict):
@@ -199,6 +305,8 @@ def max_score(evaluation: dict):
 
     Tiket yang DIKECUALIKAN tetap memakai perhitungan lama (hanya Mega Cashline).
     """
+    if is_ntb_evaluation(evaluation):
+        return _ntb_max_score(evaluation)
     total = 0.0
     found = False
     if (evaluation.get("cashline_interest") or {}).get("status") == "INTERESTED":
@@ -280,6 +388,8 @@ def scorecard_score(evaluation: dict):
 
     Pakai ``is_base_mus_item`` (sama dengan ``is_mus_item`` sejak MUS CC dipisah
     menjadi campaign tersendiri, 25 September 2026 — lihat ``BASE_MUS_CATEGORIES``)."""
+    if is_ntb_evaluation(evaluation):
+        return _ntb_scorecard_score(evaluation)
     if no_product_interest(evaluation):
         return 0
     max_sc = max_score(evaluation)
@@ -300,7 +410,12 @@ def scorecard_score(evaluation: dict):
 
 def has_blocking_intolerable_item(evaluation: dict) -> bool:
     """True bila ada item scorecard non-tolerable (tolerable=NO) yang masih
-    BELUM_SESUAI — memaksa AI status RETURN (FAIL) berapapun skornya."""
+    BELUM_SESUAI — memaksa AI status RETURN (FAIL) berapapun skornya.
+
+    NTB tidak mengenal veto ini (keputusan user 5 November 2026, sesuai prompt v11):
+    PASS/FAIL tiket NTB murni skor >= passing grade."""
+    if is_ntb_evaluation(evaluation):
+        return False
     for item in evaluation.get("scorecard_result") or []:
         tol = str((item or {}).get("tolerable") or "").strip().upper()
         st = str((item or {}).get("status") or "").strip().upper()
@@ -336,6 +451,8 @@ def non_tolerable_bomb(evaluation: dict) -> float:
     """
     from compliance.error_codes import CRITICAL_ITEM_CODES
 
+    if is_ntb_evaluation(evaluation):
+        return 0.0  # prompt NTB v11: score bomb nonaktif
     ms = _to_num(evaluation.get("maximum_score"))
     if not ms:
         return 0.0
@@ -373,6 +490,8 @@ def score_bomb_items(evaluation: dict) -> list:
     """
     from compliance.error_codes import CRITICAL_ITEM_CODES
 
+    if is_ntb_evaluation(evaluation):
+        return []  # prompt NTB v11: score bomb nonaktif
     ms = _to_num(evaluation.get("maximum_score")) or 0
     out = []
     ccc = evaluation.get("critical_compliance_check") or {}

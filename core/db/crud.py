@@ -492,6 +492,13 @@ def get_result_data(db: Session, result_id: str) -> Optional[ResultData]:
 # worker/tasks/process_transcript.py). Ini pengganti kolom
 # ``tms_cashline.submit_time`` yang tabelnya sudah tidak diisi lagi.
 _SUBMIT_TIME_JSON = ResultData.result_json["reference_data"]["cashline"]["submit_time"]
+# Campaign NTB (5 November 2026) menyimpan baris TMS-nya di ``reference_data.ntb``.
+# Tanggal Submit = submit_time TMS Cashline, lalu TMS NTB — snapshot Cashline tidak
+# pernah membawa ``ntb`` dan sebaliknya, jadi urutannya tidak menggeser tiket apa pun.
+_SUBMIT_TIME_TEXT = func.coalesce(
+    _SUBMIT_TIME_JSON.astext,
+    ResultData.result_json["reference_data"]["ntb"]["submit_time"].astext,
+)
 
 
 def _series_date_expr(db: Session):
@@ -509,11 +516,11 @@ def _series_date_expr(db: Session):
     """
     submit_date_subq = (
         db.query(
-            func.to_date(func.left(func.trim(_SUBMIT_TIME_JSON.astext), 10), "YYYY-MM-DD")
+            func.to_date(func.left(func.trim(_SUBMIT_TIME_TEXT), 10), "YYYY-MM-DD")
         )
         .filter(ResultData.result_id == Result.id)
         .filter(
-            func.trim(func.coalesce(_SUBMIT_TIME_JSON.astext, "")).op("~")(
+            func.trim(func.coalesce(_SUBMIT_TIME_TEXT, "")).op("~")(
                 r"^[0-9]{4}-[0-9]{2}-[0-9]{2}"
             )
         )
@@ -567,7 +574,7 @@ def submit_times_by_result(db: Session, result_ids) -> dict:
     if not ids:
         return {}
     rows = (
-        db.query(ResultData.result_id, _SUBMIT_TIME_JSON.astext)
+        db.query(ResultData.result_id, _SUBMIT_TIME_TEXT)
         .filter(ResultData.result_id.in_(ids))
         .distinct(ResultData.result_id)
         .order_by(ResultData.result_id, desc(ResultData.created_at))
@@ -788,11 +795,11 @@ def collection_results_query(
         # generated_at -> uploaded_at WIB) supaya kedua menu sepakat soal batas hari.
         submit_date_subq = (
             db.query(
-                func.to_date(func.left(func.trim(_SUBMIT_TIME_JSON.astext), 10), "YYYY-MM-DD")
+                func.to_date(func.left(func.trim(_SUBMIT_TIME_TEXT), 10), "YYYY-MM-DD")
             )
             .filter(ResultData.result_id == Result.id)
             .filter(
-                func.trim(func.coalesce(_SUBMIT_TIME_JSON.astext, "")).op("~")(
+                func.trim(func.coalesce(_SUBMIT_TIME_TEXT, "")).op("~")(
                     r"^[0-9]{4}-[0-9]{2}-[0-9]{2}"
                 )
             )
@@ -1333,10 +1340,13 @@ def cashline_agent_index(db: Session) -> dict:
     latest = (
         db.query(
             func.split_part(Result.source_files[0].astext, "_", 1).label("cid"),
-            ResultData.result_json["reference_data"]["cashline"]["agent_id"]
-            .astext.label("agent_id"),
-            ResultData.result_json["reference_data"]["cashline"]["submit_time"]
-            .astext.label("submit_time"),
+            # Snapshot NTB (``reference_data.ntb``, 5 November 2026) membawa agent_id &
+            # submit_time di baris TMS NTB-nya.
+            func.coalesce(
+                ResultData.result_json["reference_data"]["cashline"]["agent_id"].astext,
+                ResultData.result_json["reference_data"]["ntb"]["agent_id"].astext,
+            ).label("agent_id"),
+            _SUBMIT_TIME_TEXT.label("submit_time"),
         )
         .join(ResultData, ResultData.result_id == Result.id)
         .distinct(Result.id)
@@ -1561,7 +1571,10 @@ def _stats_signature(db: Session) -> str:
     #      (``submit_time``), bukan ``load_date`` App C (26 Okt 2026). Snapshot
     #      bertanggal v31/v32 HARUS gugur. ``ld`` tetap di sidik jari: tidak
     #      berbahaya, dan menghapusnya hanya menggeser format tanpa manfaat.
-    version = "v33"
+    # v34: skor & vonis tiket NTB dihitung dengan aturan NTB (varian minat, tanpa
+    #      score bomb/veto) dan Tanggal Submit NTB dari ``reference_data.ntb``
+    #      (5 Nov 2026). Isi baris berubah di tempat, jadi snapshot v33 harus gugur.
+    version = "v34"
     sla = "1" if get_doc_sla_enabled(db) else "0"
     # Sidik jari daftar tersembunyi. WAJIB ikut: tanpa ini snapshot yang sudah
     # ter-cache akan terus menyajikan angka tiket yang baru disembunyikan sampai ada
