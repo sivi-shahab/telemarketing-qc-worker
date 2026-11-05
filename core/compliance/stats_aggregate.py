@@ -800,7 +800,16 @@ def data_gap_map(db, results) -> dict:
         if row is None:
             continue  # snapshot reference_data belum ada -> belum bisa dinilai
         gaps = []
-        if not row["cashline"]:
+        if row.get("ntb") is not None:
+            # Campaign NTB (5 November 2026): acuannya HANYA baris TMS NTB — calon
+            # nasabah tidak punya card holder, jadi Ascend tidak pernah ditagih.
+            if not row["ntb"]:
+                gaps = [DATA_GAP_TMS]
+            else:
+                agent_id = row["agent_id"] or ""
+                if not agent_id or agent_id.casefold() not in sales:
+                    gaps.append(DATA_GAP_AGENT)
+        elif not row["cashline"]:
             # Tanpa baris TMS tidak ada no-ktpkitas, jadi acuan card holder-nya pasti
             # kosong juga — keduanya dilaporkan supaya jelas dua data yang harus
             # dilengkapi.

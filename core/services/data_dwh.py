@@ -330,6 +330,48 @@ def fetch_bundle_checked(result_id: str) -> tuple[dict, bool]:
     return bundle, True
 
 
+# --- TMS New To Bank Eksternal (5 November 2026) ----------------------------------
+#
+# Campaign NTB punya tabel TMS-nya sendiri di App A
+# (``dashboard.campaign_new_to_bank_eksternal``), dibaca lewat endpoint terpisah yang
+# TIDAK punya cache App A dan TIDAK mencari card holder:
+#     GET {DWH_API_BASE_URL}/campaign/new-to-bank-eksternal/{result_id}
+#     -> 200 {"campaign": {...baris TMS NTB...}} | 404 bila belum ada
+#
+# Sengaja TANPA cache di App B: dipanggil hanya oleh worker (sekali per tiket) dan
+# retry data acuan, dan baris yang belum ada hari ini bisa masuk nanti — cache negatif
+# justru menahan retry melihatnya.
+_API_PATH_NTB = "/campaign/new-to-bank-eksternal/{result_id}"
+
+
+def fetch_ntb_checked(result_id: str) -> tuple[Optional[dict], bool]:
+    """``(baris TMS NTB atau None, pasti)``, kontraknya sama dengan
+    :func:`fetch_bundle_checked`: ``pasti`` False berarti App A tidak bisa dihubungi
+    (network error/timeout, HTTP non-404, body bukan JSON) sehingga ``None`` itu BUKAN
+    bukti barisnya tidak ada. 404 -> ``(None, True)``."""
+    rid = str(result_id or "").strip()
+    if not rid:
+        return None, True
+    url = DWH_API_BASE_URL + _API_PATH_NTB.format(result_id=rid)
+    try:
+        resp = requests.get(url, timeout=_TIMEOUT_SEC)
+    except requests.RequestException as exc:
+        logger.warning("[data-dwh] gagal call %s: %s", url, exc)
+        return None, False
+    if resp.status_code == 404:
+        return None, True
+    if not resp.ok:
+        logger.error("[data-dwh] %s -> HTTP %s: %s", url, resp.status_code, resp.text[:200])
+        return None, False
+    try:
+        data = resp.json()
+    except ValueError as exc:
+        logger.error("[data-dwh] response bukan JSON dari %s: %s", url, exc)
+        return None, False
+    row = data.get("campaign") if isinstance(data, dict) else None
+    return (row if isinstance(row, dict) else None), True
+
+
 def clear_cache() -> None:
     """Kosongkan cache in-memory App B (dipakai di test / setelah data direfresh).
     L2 Redis tidak disentuh — ia bersama untuk semua proses."""

@@ -47,7 +47,7 @@ from services import data_dwh
 from compliance.processing_stages import PROCESSING_STAGES, STAGE_KEYS
 
 from compliance.call_ownership import agent_name_verdict, stamp_agent_name_reason
-from compliance.campaign_kind import is_collection, parse_collection_campaigns
+from compliance.campaign_kind import is_collection, is_ntb, parse_collection_campaigns
 from compliance.collection_report import (
     apply_configured_weights,
     build_collection_result_json,
@@ -220,7 +220,8 @@ def _download_transcripts(result_id: str) -> list[str]:
     return paths
 
 
-def _assigned_name_online(db, customer_id: str) -> "tuple[str | None, str | None, tuple, str]":
+def _assigned_name_online(db, customer_id: str, tms_row: "dict | None" = None
+                          ) -> "tuple[str | None, str | None, tuple, str]":
     """``(agent_id, NAME ONLINE, seluruh NAME ONLINE roster, nama karyawan)`` tiket ini.
 
     ``agent_id`` dari ``tms_cashline.agent_id`` (satu agent per tiket), NAME ONLINE
@@ -230,11 +231,16 @@ def _assigned_name_online(db, customer_id: str) -> "tuple[str | None, str | None
     Semuanya kosong bila tiketnya tidak ada di TMS atau agent-nya tidak ada di
     roster — pemanggil lalu tidak menjatuhkan apa pun (lihat docstring
     ``agent_name_verdict``).
+
+    ``tms_row`` (5 November 2026): baris TMS yang SUDAH diambil pemanggil — campaign
+    NTB membawa ``agent_id`` di baris TMS NTB-nya sendiri, bukan di TMS Cashline.
+    None = cari baris TMS Cashline seperti biasa.
     """
     if not customer_id:
         return None, None, (), ""
     try:
-        row = crud.get_tms_cashline_by_result_id(db, customer_id) or {}
+        row = (tms_row if tms_row is not None
+               else crud.get_tms_cashline_by_result_id(db, customer_id)) or {}
         agent_id = (row.get("agent_id") or "").strip() or None
         if not agent_id:
             return None, None, (), ""
@@ -415,8 +421,21 @@ def process_transcript(result_id: str):
         customer_id_early = customer_id_from_filenames(
             [os.path.basename(p) for p in pdf_paths]
         )
+        # Campaign NTB (5 November 2026): data acuannya HANYA baris TMS NTB App A
+        # (``/campaign/new-to-bank-eksternal/{id}``) — tanpa TMS Cashline dan tanpa
+        # card holder Ascend. Diambil SEKALI di sini karena dipakai dua kali: agent
+        # pemilik tiket (``agent_id``) dan gerbang data acuan di langkah 4c.
+        ntb = is_ntb(result.campaign)
+        ntb_row = None
+        if ntb:
+            ntb_row, ntb_pasti = data_dwh.fetch_ntb_checked(customer_id_early)
+            if not ntb_pasti:
+                raise RuntimeError(
+                    f"App A (TMS NTB) tidak dapat dihubungi untuk id={customer_id_early} — "
+                    "data acuan tidak bisa dipastikan; reprocess tiket setelah App A pulih."
+                )
         agent_id, name_online, roster_names, nama_karyawan = _assigned_name_online(
-            db, customer_id_early)
+            db, customer_id_early, tms_row=(ntb_row or {}) if ntb else None)
         texts = {p: transcript_plain_text(p) for p in pdf_paths}
         tahap.catat("baca_teks_pdf")
 
@@ -530,9 +549,19 @@ def process_transcript(result_id: str):
         # yang SAMA dengan ``crud.reference_snapshot_index`` (data_gap saat BACA).
         # JANGAN diganti ke query tabel tms_cashline/ascend_custp: tabel itu kosong
         # di produksi, jadi setiap tiket akan jatuh ke gerbang PENDING di bawah.
-        reference_text, ref_warnings, reference_raw = build_reference_data(
-            customer_id, db, riplay_extraction=campaign.riplay_extraction
-        )
+        if ntb:
+            # NTB: TIDAK ada blok acuan untuk LLM — prompt NTB (v11) menilai dari
+            # transkrip saja. Baris TMS NTB tetap disimpan sebagai snapshot
+            # (``reference_data.ntb``) karena dibaca saat BACA: data_gap, retry data
+            # acuan, agent & tanggal tiket. Kunci ``cashline``/``customer`` sengaja
+            # TIDAK ditulis supaya pembaca Cashline tidak menuduhnya "Data Ascend
+            # Kosong".
+            reference_text, ref_warnings = None, []
+            reference_raw = {"ntb": ntb_row}
+        else:
+            reference_text, ref_warnings, reference_raw = build_reference_data(
+                customer_id, db, riplay_extraction=campaign.riplay_extraction
+            )
         for warn in ref_warnings:
             logger.warning("reference data (%s / id=%s): %s", result_id, customer_id, warn)
         ref_found = {
@@ -589,21 +618,29 @@ def process_transcript(result_id: str):
         # ``data_gap`` tetap menghasilkan PENDING + alasan "Data TMS Kosong · Data
         # Ascend Kosong" di kolom Results. Satu definisi PENDING, bukan dua.
         kurang = []
-        if not ref_found.get("cashline"):
-            kurang.append("TMS")
-        if not ref_found.get("cardholder"):
-            kurang.append("Ascend")
+        if ntb:
+            # Hanya TMS NTB yang menjadi syarat; Ascend tidak berlaku untuk calon
+            # nasabah. Keterjangkauan App A sudah dipastikan di langkah 2a.
+            if ntb_row is None:
+                kurang.append("TMS")
+        else:
+            if not ref_found.get("cashline"):
+                kurang.append("TMS")
+            if not ref_found.get("cardholder"):
+                kurang.append("Ascend")
 
         if kurang:
             # [MERGE 4-service 21092026] Bundle kosong karena DWH TIDAK BISA DIHUBUNGI
             # bukan bukti data acuannya tidak ada. Gagalkan tiketnya (status
             # ``failed``, bisa di-reprocess) alih-alih mencapnya PENDING tanpa dinilai.
-            _, dwh_pasti = data_dwh.fetch_bundle_checked(customer_id)
-            if not dwh_pasti:
-                raise RuntimeError(
-                    f"DWH API tidak dapat dihubungi untuk id={customer_id} — "
-                    "data acuan tidak bisa dipastikan; reprocess tiket setelah DWH pulih."
-                )
+            # NTB sudah memastikannya sendiri di langkah 2a (``fetch_ntb_checked``).
+            if not ntb:
+                _, dwh_pasti = data_dwh.fetch_bundle_checked(customer_id)
+                if not dwh_pasti:
+                    raise RuntimeError(
+                        f"DWH API tidak dapat dihubungi untuk id={customer_id} — "
+                        "data acuan tidak bisa dipastikan; reprocess tiket setelah DWH pulih."
+                    )
             logger.warning(
                 "result %s (id=%s): data acuan %s kosong — TIDAK dinilai, langsung PENDING",
                 result_id, customer_id, " & ".join(kurang),
@@ -765,19 +802,27 @@ def process_transcript(result_id: str):
             # skor maksimal tiket bergantung padanya (108.75 bila dikecualikan, 150 bila
             # MUS wajib tetapi tidak dipenuhi). Menggabungkan bacaan LLM atas transkrip
             # dengan daftar tetap Bank Mega; lihat ``compliance.mus_exemption``.
-            evaluation = stamp_mus_exemption(evaluation, customer_id)
-
+            #
             # 5d. Skor disetel ulang dari scorecard memakai rumus yang sama dengan pembaca
             # — SELALU. Tanpa ini JSON tersimpan kadang membawa angka mentah LLM yang tidak
             # mengenal iris 10% item non-tolerable; lihat ``two_pass.resync_scores``.
-            evaluation = resync_scores(evaluation)
+            #
+            # NTB (5 November 2026) melewati KEDUANYA: daftar pengecualian MUS adalah
+            # milik Cashline, dan rumus ``compliance.scoring`` masih berlogika Cashline
+            # (minat ``cashline_interest``/``mus_interest``, iris 10% non-tolerable —
+            # padahal prompt NTB v11 mematikan score bomb). Skor tersimpan tiket NTB
+            # adalah angka prompt NTB apa adanya sampai scoring NTB dibuat (spec
+            # 2026-11-05-results-kolom-per-campaign §4).
+            if not ntb:
+                evaluation = stamp_mus_exemption(evaluation, customer_id)
+                evaluation = resync_scores(evaluation)
 
             # [DIPERTAHANKAN dari produksi — A@HEAD menjatuhkannya saat f672425
             # menghidupkan lagi PARALEL] Mode paralel: ``critical_compliance_check``
             # diambil UTUH dari rekaman utama, tetapi ``merge_parallel`` sudah menaikkan
             # sebagian ``scorecard_result`` dari rekaman lain. Tanpa ini item kritis yang
             # sudah SESUAI di rekaman perbaikan tetap ditagih ``-(maximum_score / 4)``.
-            if paralel:
+            if paralel and not ntb:
                 evaluation = resync_scores(_resync_critical(evaluation))
 
         tahap.catat("gabung_dan_skor")
