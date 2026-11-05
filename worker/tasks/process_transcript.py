@@ -44,6 +44,7 @@ from sqlalchemy.orm import sessionmaker
 
 from services.s3_buckets import build_minio_client
 from services import data_dwh
+from services import microsite
 from compliance.processing_stages import PROCESSING_STAGES, STAGE_KEYS
 
 from compliance.call_ownership import agent_name_verdict, apply_ntb_agent_name_verdict, stamp_agent_name_reason
@@ -77,7 +78,7 @@ from compliance.reference_data import (
     customer_id_from_filenames,
 )
 from compliance.campaign_profile import is_ntb_evaluation
-from compliance.ntb_verification import apply_handphone_belum_dinilai, apply_pdp_supplement_belum_dinilai, apply_persetujuan_data_belum_dinilai, apply_lama_bekerja_verdict, apply_telepon_kantor_verdict, apply_hp_keluarga_verdict, apply_supplement_verdicts, apply_verification_verdicts, ensure_scorecard_items, ktp_ocr_values
+from compliance.ntb_verification import apply_handphone_belum_dinilai, apply_pdp_supplement_belum_dinilai, apply_persetujuan_data_belum_dinilai, apply_lama_bekerja_verdict, apply_telepon_kantor_verdict, apply_hp_keluarga_verdict, apply_supplement_verdicts, apply_verification_verdicts, ensure_scorecard_items
 from compliance.sales_roster import parse_roster
 from prompt.recording_type import TAG_LABELS, TAG_UTAMA
 from db import crud
@@ -565,7 +566,15 @@ def process_transcript(result_id: str):
             # TIDAK ditulis supaya pembaca Cashline tidak menuduhnya "Data Ascend
             # Kosong".
             reference_text, ref_warnings = None, []
-            reference_raw = {"ntb": ntb_row}
+            # KTP nasabah dari API Microsite (OCR KTP di DMS, 5 Nov 2026): sumber "Microsite" untuk
+            # NTB Data Verification dan aturan KTP lama / usia. Dipanggil sekali per proses dan
+            # disimpan sebagai snapshot ``reference_data.microsite_ktp``; pembaca tidak memanggil
+            # Microsite. Hanya bila baris TMS ada (tanpa TMS tiket berhenti di gerbang PENDING).
+            # Microsite gagal -> ``status`` error, tiket tetap dinilai tanpa sumber Microsite.
+            microsite_ktp = microsite.fetch_ktp(customer_id) if ntb_row else None
+            if microsite_ktp is not None:
+                logger.info("microsite KTP (%s / id=%s): %s", result_id, customer_id, microsite_ktp.get("status"))
+            reference_raw = {"ntb": ntb_row, "microsite_ktp": microsite_ktp}
         else:
             reference_text, ref_warnings, reference_raw = build_reference_data(
                 customer_id, db, riplay_extraction=campaign.riplay_extraction
@@ -810,8 +819,8 @@ def process_transcript(result_id: str):
             if is_ntb_evaluation(evaluation):
                 _tms_ntb = ntb_row
                 evaluation = ensure_scorecard_items(evaluation, campaign.scorecard_text)
-                _ktp_nama = ktp_ocr_values(crud.document_ocr_by_result(db, [str(result_id)]).get(str(result_id), ())) if result_id else None
-                evaluation = apply_verification_verdicts(evaluation, _tms_ntb, _ktp_nama)
+                _ktp = microsite.values_from_snapshot((reference_raw or {}).get("microsite_ktp"))
+                evaluation = apply_verification_verdicts(evaluation, _tms_ntb, _ktp)
                 evaluation = apply_lama_bekerja_verdict(evaluation, _tms_ntb)
                 evaluation = apply_telepon_kantor_verdict(evaluation, _tms_ntb)
                 evaluation = apply_hp_keluarga_verdict(evaluation, _tms_ntb)

@@ -1578,7 +1578,10 @@ def _stats_signature(db: Session) -> str:
     #      KTP, Legal Statement, PDP, Final Confirmation + veto non-tolerable) dan
     #      verifikasi NTB deterministik (5 Nov 2026). Skor/vonis tiket NTB lama berubah
     #      saat baca tanpa data baru, jadi snapshot v34 harus gugur.
-    version = "v35"
+    # v36: KTP NTB (aturan KTP lama / usia 21-65, voting Data Verification) dibaca dari
+    #      API Microsite (snapshot ``reference_data.microsite_ktp``), bukan dari foto KTP
+    #      yang diunggah atau CSV per field (5 Nov 2026). Vonis tiket NTB berubah di tempat.
+    version = "v36"
     sla = "1" if get_doc_sla_enabled(db) else "0"
     # Sidik jari daftar tersembunyi. WAJIB ikut: tanpa ini snapshot yang sudah
     # ter-cache akan terus menyajikan angka tiket yang baru disembunyikan sampai ada
@@ -2288,6 +2291,26 @@ def get_tms_ntb_by_result_id(db: Session, result_id: str) -> Optional[dict]:
             return snap[0]
     row, _pasti = data_dwh.fetch_ntb_checked(rid)
     return row
+
+
+def get_microsite_ktp_by_result_id(db: Session, result_id: str) -> dict:
+    """Nilai KTP Microsite (OCR KTP dari DMS, ``services.microsite``) untuk tiket NTB ``result_id``,
+    dari snapshot ``reference_data.microsite_ktp`` evaluasi terbaru. Kosong bila belum ada snapshot
+    (tiket diproses sebelum Microsite dipakai, fitur mati, atau Microsite gagal). Pembaca TIDAK
+    memanggil Microsite langsung: OCR mahal dan hasilnya harus sama dengan yang dipakai menilai."""
+    from services.microsite import values_from_snapshot
+
+    rid = str(result_id or "").strip()
+    if not rid or db is None:
+        return {}
+    snap = (
+        db.query(ResultData.result_json["reference_data"]["microsite_ktp"])
+        .join(Result, ResultData.result_id == Result.id)
+        .filter(func.split_part(Result.source_files[0].astext, "_", 1) == rid)
+        .order_by(desc(ResultData.created_at))
+        .first()
+    )
+    return values_from_snapshot(snap[0] if snap is not None else None)
 
 
 # TMS change flag -> document types allowed for upload. KK and cover_buku_tabungan

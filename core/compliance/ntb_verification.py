@@ -126,11 +126,7 @@ def _extracted(extraction, key):
 NAMA_AMBANG = 80.0  # ambang similarity nama KTP untuk tiap pasangan (OCR, TMS, transkrip)
 
 
-# Nilai KTP hasil OCR (``ktp_ocr_values``) -> kunci; kolom TMS NTB -> kunci KTP (Microsite untuk voting).
-_KTP_OCR_KEYS = {"nama": "nama_ktp", "tanggal_lahir": "tanggal_lahir", "tempat_lahir": "tempat_lahir",
-                 "jenis_kelamin": "jenis_kelamin", "status_perkawinan": "status_perkawinan_ktp",
-                 "pekerjaan": "pekerjaan_ktp", "alamat": "alamat_ktp", "rt": "rt_ktp", "rw": "rw_ktp",
-                 "kelurahan": "kelurahan_ktp", "kecamatan": "kecamatan_ktp"}
+# Kolom TMS NTB -> kunci nilai KTP Microsite (``services.microsite.ktp_values``) untuk voting.
 _KTP_KOLOM = {"no-ktpkitas": "nik", "kewarganegaraan": "kewarganegaraan", "tanggal-lahir": "tanggal_lahir",
               "tempat-lahir": "tempat_lahir", "jenis-kelamin": "jenis_kelamin",
               "status-perkawinan": "status_perkawinan", "pekerjaan": "pekerjaan"}
@@ -139,61 +135,6 @@ _KTP_KOLOM = {"no-ktpkitas": "nik", "kewarganegaraan": "kewarganegaraan", "tangg
 # Item Data Verification KTP yang ikut score bomb (kesepakatan Bank Mega): hanya NIK, nama, jenis kelamin,
 # tanggal lahir, kewarganegaraan. Field KTP lain (tempat lahir, status, alamat, pekerjaan) tidak ikut.
 _KTP_ITEM_CODES = {"SC_NTB_9", "SC_NTB_10", "SC_NTB_11", "SC_NTB_12", "SC_NTB_15"}  # nama, NIK, WNI/WNA, jenis kelamin, tanggal lahir
-
-
-def ktp_ocr_values(documents):
-    """Semua nilai KTP hasil OCR dari ``[(doc_type, ocr_json), ...]`` (dokumen ``done``) sebagai dict
-    (``nama``, ``nik``, ``kewarganegaraan``, ``tanggal_lahir``, ``tempat_lahir``, ``jenis_kelamin``,
-    ``status_perkawinan``, ``pekerjaan``, ``alamat``, ``rt``, ``rw``, ``kelurahan``, ``kecamatan``);
-    hanya yang terbaca. Per field, KTP terakhir yang terbaca menang. NIK/kewarganegaraan dari baris
-    ``verifications``; field lain butuh OCR baru (KTP yang di-OCR sebelum 30 Okt 2026 hanya punya nama,
-    tanggal lahir, NIK, kewarganegaraan)."""
-    out = {}
-    for doc_type, ocr in documents or ():
-        if doc_type != "ktp" or not isinstance(ocr, dict):
-            continue
-        for key, src in _KTP_OCR_KEYS.items():
-            v = _clean(ocr.get(src))
-            if v:
-                out[key] = v
-        for row in ocr.get("verifications") or []:
-            kunci = {"NIK": "nik", "KEWARGANEGARAAN": "kewarganegaraan"}.get(str((row or {}).get("field") or "").strip().upper())
-            v = _clean((row or {}).get("document"))
-            if kunci and v:
-                out[kunci] = v
-    return out
-
-
-def ktp_ocr_name(documents):
-    """Nama pada KTP hasil OCR (``nama_ktp``); None bila tak ada."""
-    return ktp_ocr_values(documents).get("nama")
-
-
-# Microsite: satu CSV per field di ``ntb_source_data/microsite/<kolom TMS>.csv`` (kolom ``ticket_id,value``),
-# dipakai sebagai sumber ketiga voting (Microsite, TMS, transkrip). Tanpa berkas / tanpa baris tiket =
-# perilaku lama (TMS vs transkrip). Berkas dibaca ulang bila berubah (mtime).
-MICROSITE_DIR = os.path.join(SOURCE_DATA_DIR, "microsite")
-
-
-@functools.lru_cache(maxsize=None)
-def _load_microsite(column, mtime):
-    try:
-        with open(os.path.join(MICROSITE_DIR, f"{column}.csv"), encoding="utf-8-sig", newline="") as f:
-            return {(r.get("ticket_id") or "").strip(): (r.get("value") or "").strip()
-                    for r in csv.DictReader(f) if (r.get("ticket_id") or "").strip() and (r.get("value") or "").strip()}
-    except OSError:
-        return {}
-
-
-def microsite_value(column, ticket_id):
-    """Nilai Microsite untuk ``ticket_id`` pada kolom TMS ``column`` (None bila tak ada)."""
-    if not ticket_id:
-        return None
-    try:
-        mtime = os.path.getmtime(os.path.join(MICROSITE_DIR, f"{column}.csv"))
-    except OSError:
-        return None
-    return _load_microsite(column, mtime).get(str(ticket_id).strip()) or None
 
 
 # Tipe pembanding yang ikut voting. Tidak ikut (aturan khusus): source_data, jenis_kartu, estatement,
@@ -253,7 +194,7 @@ def build_ntb_data_verification(evaluation, tms_row, ktp=None) -> list:
     Tiap baris: ``field``, ``label``, ``tms_column``, ``tms_value``, ``extracted_value``,
     ``item_code``, ``item_status`` (status item di scorecard_result, atau None)."""
     ev = evaluation if isinstance(evaluation, dict) else {}
-    ktp = {"nama": ktp} if isinstance(ktp, str) else dict(ktp or {})  # nilai KTP hasil OCR (``ktp_ocr_values``)
+    ktp = {"nama": ktp} if isinstance(ktp, str) else dict(ktp or {})  # nilai KTP Microsite (``services.microsite``)
     ktp_nama = ktp.get("nama")
     status_by_code = {
         (it or {}).get("item_code"): (it or {}).get("status")
@@ -321,14 +262,14 @@ def build_ntb_data_verification(evaluation, tms_row, ktp=None) -> list:
                 catatan = _THRESHOLD_NOTES["tagihan_tanpa_ucapan"]
         if ((tipe in _VOTING_TIPE or column == "no-ktpkitas") and column not in _VOTING_KECUALI
                 and column != "nama-lengkap-sesuai-ktp"):
-            # Microsite = CSV per field bila ada, selain itu hasil OCR KTP (Microsite) untuk field yang ada di KTP.
-            micro = microsite_value(column, tms.get("result_id")) or ktp.get(_KTP_KOLOM.get(column))
+            # Microsite = hasil OCR KTP dari API Microsite (snapshot ``reference_data.microsite_ktp``).
+            micro = ktp.get(_KTP_KOLOM.get(column))
             if micro is not None:
                 match, similarity, reason = vote_field(column, tms_value, micro, extracted)
                 source_value = micro
                 catatan = _THRESHOLD_NOTES["gender_nik" if column == "jenis-kelamin" else tipe] + _VOTING_NOTE
         if column == "nama-lengkap-sesuai-ktp" and ktp_nama:
-            # Microsite = hasil OCR KTP yang diunggah: OCR, TMS, dan transkrip harus saling cocok.
+            # Microsite = hasil OCR KTP dari API Microsite: OCR, TMS, dan transkrip harus saling cocok.
             match, similarity, reason = _nama_tiga_arah(tms_value, ktp_nama, extracted)
             tipe, source_value = "nama_tiga_arah", ktp_nama
         if column == "jenis-kelamin":
@@ -431,8 +372,7 @@ def build_ntb_supplement_verification(evaluation, tms_row) -> list:
     ``ntb_application_extraction.kartu_tambahan[]``), ditambah satu baris alamat pengiriman kartu tambahan
     (kartu tambahan dikirim ke alamat kartu utama, jadi mengikuti hasil baris alamat pengiriman kartu utama).
     Daftar kosong bila TMS maupun transkrip tidak memuat kartu tambahan. Tampilan saja: tidak mengubah
-    status item scorecard, skor, maupun error code. Kolom Microsite (CSV per kolom TMS slot) menjadi sumber
-    ketiga voting 2 dari 3 seperti Data Verification."""
+    status item scorecard, skor, maupun error code. Tanpa sumber Microsite (TMS vs transkrip)."""
     ev = evaluation if isinstance(evaluation, dict) else {}
     tms = tms_row or {}
     extraction = ev.get("ntb_application_extraction")
@@ -461,19 +401,9 @@ def build_ntb_supplement_verification(evaluation, tms_row) -> list:
         for key, label, kolom, pembanding, code in _SUPPLEMENT_FIELDS:
             tms_value, extracted = tcard.get(key), scard.get(key)
             match, similarity, reason, tipe = compare_field(pembanding, tms_value, extracted)
-            kolom_slot = kolom.format(n=slot) if slot else None
+            # Kartu tambahan tidak punya sumber Microsite (API Microsite hanya KTP nasabah utama):
+            # TMS vs transkrip saja.
             catatan, source_value = None, None
-            # Microsite = CSV per field (``microsite/<kolom TMS slot>.csv``, mis. ``jenis-kelamin-1-new``), sumber
-            # ketiga voting seperti NTB Data Verification: valid bila minimal 2 sumber sepakat.
-            micro = microsite_value(kolom_slot, tms.get("result_id")) if kolom_slot else None
-            if micro is not None:
-                if key == "nama":
-                    match, similarity, reason = _nama_tiga_arah(tms_value, micro, extracted)
-                    tipe, catatan = "nama_tiga_arah", None
-                else:
-                    match, similarity, reason = vote_field(pembanding, tms_value, micro, extracted)
-                    catatan = _THRESHOLD_NOTES[tipe] + _VOTING_NOTE
-                source_value = micro
             rows.append({
                 "field": f"kartu_tambahan_{urut}_{key}",
                 "card_no": urut,
