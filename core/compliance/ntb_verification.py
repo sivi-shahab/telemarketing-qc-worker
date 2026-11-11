@@ -44,6 +44,8 @@ _ALAMAT_KANTOR_BANDING = (("nama-perusahaan", "nama_perusahaan"), ("alamat-kanto
 
 # (kunci ekstraksi transkrip, label, kolom TMS NTB, kode item scorecard)
 # Kunci ekstraksi = ``evaluation["ntb_application_extraction"]`` (lihat prompt NTB).
+CONSENT_ITEM = "SC_NTB_77"  # sharing data untuk penawaran lain; tidak wajib, bobot 0, tolerable YES
+
 NTB_FIELDS = (
     ("jenis_kartu", "Jenis kartu", "kartu-kredit-yang-dikehendaki", "SC_NTB_8"),
     ("nama_lengkap_ktp", "Nama lengkap sesuai KTP", "nama-lengkap-sesuai-ktp", "SC_NTB_9"),
@@ -69,7 +71,8 @@ NTB_FIELDS = (
     ("alamat_pengiriman_kartu", "Alamat pengiriman kartu", "alamat-pengiriman-kartu", "SC_NTB_37"),
     ("alamat_tagihan_bulanan", "Alamat penagihan bulanan", "alamat-tagihan-bulanan", "SC_NTB_38"),
     (None, "Source code", "source-code", "SC_NTB_39"),
-    ("persetujuan_sharing_data", "Persetujuan data nasabah (sharing data)", "persetujuan-data-nasabah", "SC_NTB_40"),
+    (None, "Persetujuan PDP nasabah (microsite)", "persetujuan-data-nasabah", "SC_NTB_40"),
+    ("persetujuan_sharing_data", "Consent nasabah (penawaran produk lain)", "consent-nasabah", CONSENT_ITEM),
     ("estatement", "E-statement", "estatement", "SC_NTB_41"),
 )
 
@@ -138,7 +141,7 @@ _KTP_ITEM_CODES = {"SC_NTB_9", "SC_NTB_10", "SC_NTB_11", "SC_NTB_12", "SC_NTB_15
 
 
 # Tipe pembanding yang ikut voting. Tidak ikut (aturan khusus): source_data, jenis_kartu, estatement,
-# microsite_menyusul, telepon kantor (digit), handphone nasabah, alamat pengiriman/penagihan. Alamat rumah gabungan
+# pdp_tms, telepon kantor (digit), handphone nasabah, alamat pengiriman/penagihan. Alamat rumah gabungan
 # memakai voting sendiri di ``_alamat_row`` (KTP sebagai sumber ketiga).
 _VOTING_TIPE = {"nama", "tanggal", "digit_1", "email", "lama_kerja", "bidang_usaha", "pekerjaan", "angka",
                 "kategori", "penghasilan", "teks"}
@@ -212,6 +215,8 @@ def build_ntb_data_verification(evaluation, tms_row, ktp=None) -> list:
             rows.append(_alamat_row(column, label, code, extraction, tms, status_by_code, ktp))
             continue
         tms_value = _clean(tms.get(column))
+        if column == "consent-nasabah" and tms.get(column) is not None and str(tms.get(column)).strip() in ("0", "1"):
+            tms_value = str(tms.get(column)).strip()  # "0" = tidak setuju (data nyata), bukan placeholder kosong
         extracted = _extracted(extraction, key)
         if column == "jenis-kelamin":
             # Jenis kelamin dihitung dari NIK digit 7-12 (NIK transkrip; bila tak terbaca, NIK TMS).
@@ -276,9 +281,6 @@ def build_ntb_data_verification(evaluation, tms_row, ktp=None) -> list:
             tipe = "gender_nik"
             if from_nik and match != "SKIPPED_NULL":
                 reason = f"{reason.replace(', ucapan ', ', NIK ')} Dihitung dari NIK digit 7-12 ({re.sub(chr(92) + 'D', '', str(nik))[6:12]})."
-        if column == "persetujuan-data-nasabah":
-            # Persetujuan sharing data ke mitra dicek dari Microsite (menunggu contoh data), bukan dari transkrip.
-            extracted = None
         if column == "handphone":
             # Handphone nasabah dibandingkan TMS vs Microsite, bukan dengan transkrip (keputusan pemilik, 27 Okt 2026;
             # menggantikan aturan "wajib diucapkan lengkap" 22 Okt). Microsite belum diterima: sementara SKIPPED_NULL,
@@ -596,8 +598,8 @@ def apply_verification_verdicts(evaluation, tms_row, ktp=None):
                     it["evidence"] = {**ev, "quote": f"{ringkas} | similarity {_fmt(sim) if sim is not None else '-'}%"}
             continue
         it = by_code.get(code)
-        if it is None or code == LAMA_BEKERJA_ITEM:
-            continue
+        if it is None or code in (LAMA_BEKERJA_ITEM, CONSENT_ITEM):
+            continue  # SC_NTB_77: consent tidak wajib, status dari transkrip apa pun nilai TMS-nya
         label = "cocok dengan" if match == "MATCH" else "TIDAK cocok dengan"
         _set_item(it, status, f"{row.get('label')} {label} data TMS{sim_txt}. {row.get('reason') or ''} {ringkas}".strip())
     # Score bomb KTP: data yang SALAH menurut KTP (baris MISMATCH yang membawa nilai KTP hasil OCR).
@@ -743,40 +745,34 @@ def apply_handphone_belum_dinilai(evaluation, tms_row):
 
 
 PERSETUJUAN_DATA_ITEM = "SC_NTB_40"
-
-
-def apply_persetujuan_data_belum_dinilai(evaluation, tms_row):
-    """Persetujuan sharing data ke mitra (``SC_NTB_40``) dicek dari Microsite (30 Okt 2026), bukan dari transkrip.
-
-    Contoh data Microsite belum ada, jadi item ``TIDAK_DINILAI`` (tanpa potongan skor dan tanpa veto), apa pun
-    penilaian LLM dari percakapan. Begitu pembanding Microsite ditulis, baris Data Verification tidak lagi
-    ``SKIPPED_NULL`` dan fungsi ini otomatis tidak berbuat apa-apa."""
-    return _belum_dinilai(evaluation, tms_row, PERSETUJUAN_DATA_ITEM, "persetujuan-data-nasabah",
-                          "Persetujuan sharing data ke mitra dicek dari Microsite (bukan transkrip); "
-                          "data Microsite belum tersedia sehingga item belum dinilai.")
-
-
 PDP_SUPPLEMENT_ITEM = "SC_NTB_46"
+_PDP_TMS_SETUJU = {"y", "1"}
 
 
-def apply_pdp_supplement_belum_dinilai(evaluation):
-    """PDP kartu tambahan (``SC_NTB_46``) dicek dari Microsite (keputusan user 3 Nov 2026), bukan dari transkrip.
+def pdp_tms_setuju(value):
+    """``True`` bila kolom TMS ``persetujuan-data-nasabah`` = ``Y`` atau ``1`` (huruf besar/kecil dan spasi diabaikan)."""
+    return str(value if value is not None else "").strip().lower() in _PDP_TMS_SETUJU
 
-    Contoh data Microsite untuk Supplement belum ada, jadi item ``TIDAK_DINILAI`` (tanpa potongan skor, tanpa veto,
-    tanpa bom PDP), apa pun penilaian LLM dari percakapan. Hapus fungsi ini saat pembaca Microsite ditulis.
-    Tanpa item itu di scorecard -> tidak berbuat apa-apa."""
-    if not isinstance(evaluation, dict):
+
+def apply_pdp_tms_gate(evaluation, tms_row):
+    """PDP (``SC_NTB_40`` dan ``SC_NTB_46``) dicek terhadap kolom TMS ``persetujuan-data-nasabah`` (10 Nov 2026).
+
+    Hasil microsite persetujuan data sudah ada di TMS. ``Y``/``1`` = nasabah setuju: ``SC_NTB_40`` SESUAI lewat baris
+    Data Verification (hanya cek TMS; script tidak punya kalimat PDP kartu utama), ``SC_NTB_46`` dinilai dari
+    transkrip (agent meminta, nasabah menjawab) dan tidak disentuh di sini. Selain itu (termasuk kosong) persetujuan
+    wajib tidak ada: kedua item ``BELUM_SESUAI`` (non-tolerable, jadi memveto dan menyalakan bom PDP).
+    ``SC_NTB_77`` (consent penawaran lain, tidak wajib) tidak terpengaruh.
+    Tanpa baris TMS -> tidak berbuat apa-apa. Menggantikan ``apply_persetujuan_data_belum_dinilai`` dan
+    ``apply_pdp_supplement_belum_dinilai`` (rencana Microsite 30 Okt/3 Nov)."""
+    if not isinstance(evaluation, dict) or not tms_row:
         return evaluation
-    item = next((it for it in (evaluation.get("scorecard_result") or [])
-                 if (it or {}).get("item_code") == PDP_SUPPLEMENT_ITEM), None)
-    if item is None:
+    if pdp_tms_setuju(_clean(tms_row.get("persetujuan-data-nasabah"))):
         return evaluation
-    if str(item.get("status") or "").upper() != "TIDAK_DINILAI":
-        item["status"] = "TIDAK_DINILAI"
-        item["item_score"] = 0
-        item["reason"] = ("PDP kartu tambahan dicek dari Microsite (bukan transkrip); "
-                          "data Microsite belum tersedia sehingga item belum dinilai.")
-        item["point_of_improvement"] = None
+    nilai = _clean(tms_row.get("persetujuan-data-nasabah")) or "kosong"
+    for it in evaluation.get("scorecard_result") or []:
+        if (it or {}).get("item_code") in (PERSETUJUAN_DATA_ITEM, PDP_SUPPLEMENT_ITEM):
+            _set_item(it, "BELUM_SESUAI",
+                      f"TMS persetujuan-data-nasabah = {nilai}: nasabah tidak menyetujui PDP, wajib Y/1 untuk memproses kartu.")
     return evaluation
 
 
@@ -1176,7 +1172,8 @@ _TYPE = {
     "status-perkawinan": "kategori",
     "kewarganegaraan": "kategori",
     "estatement": "kategori",
-    "persetujuan-data-nasabah": "microsite_menyusul",
+    "persetujuan-data-nasabah": "pdp_tms",
+    "consent-nasabah": "consent_tms",
     "penghasilan-kotor-perbulan": "penghasilan",
     "alamat-pengiriman-kartu": "kategori",
     "alamat-tagihan-bulanan": "kategori",
@@ -1210,7 +1207,8 @@ _THRESHOLD_NOTES = {
     "interest_supplement": ["Minat Supplement di TMS: salah satu kolom supplement-1-chk .. supplement-4-chk terisi → tertarik", "Dibandingkan dengan minat Supplement dari transkrip (INTERESTED / bukan)", "Sama → MATCH; berbeda → MISMATCH"],
     "source_code_minat": ["Source code TMS dibandingkan dengan minat Supplement di TMS (kolom supplement-1..4-chk)", "Ada kartu tambahan → TPIBDLREGNET (Basic Bundling Supplement); tanpa kartu tambahan → TPIREGRFCNET (Basic Only)", "Sesuai → MATCH; tidak sesuai → MISMATCH; source code kosong → SKIPPED_NULL", "Hanya perbandingan TMS vs TMS; tidak memengaruhi status SC_NTB_39"],
     "tidak_diucapkan": ["Field diisi sistem, tidak diucapkan agent → tidak dibandingkan"],
-    "microsite_menyusul": ["Persetujuan sharing data ke mitra dicek dari Microsite (persetujuan yang diberikan nasabah di microsite), bukan dari transkrip", "Contoh data Microsite belum tersedia → SKIPPED_NULL, item belum dinilai (TIDAK_DINILAI, tanpa potongan skor dan tanpa veto)"],
+    "consent_tms": ["Consent penawaran produk lain dari Bank Mega/mitra dicatat di kolom TMS consent-nasabah (1 = setuju, 0 = tidak)", "TIDAK WAJIB: setuju atau menolak sama-sama dapat dilanjutkan; kolom ini hanya ditampilkan dan tidak memengaruhi SC_NTB_77", "SC_NTB_77 dinilai dari transkrip: agent meminta persetujuan (jawaban nasabah apa pun)"],
+    "pdp_tms": ["Persetujuan PDP nasabah dari microsite ada di kolom TMS persetujuan-data-nasabah: Y atau 1 = setuju, selain itu (termasuk kosong) = tidak setuju → wajib setuju untuk memproses kartu", "Tidak setuju → SC_NTB_40 dan SC_NTB_46 BELUM_SESUAI (bom PDP)", "Setuju → SC_NTB_40 SESUAI (hanya cek TMS, script tidak punya kalimatnya); SC_NTB_46 dinilai dari transkrip: agent meminta persetujuan dan nasabah menjawab setuju"],
     "jenis_kartu": ["Jenis kartu TMS tidak disebut di transkrip → MATCH (TMS sudah valid)", "Hanya disebut \"kartu kredit\" tanpa nama jenis → MATCH (dianggap sesuai TMS)", "Nama jenis disebut (mis. Visa Metro, Gold): semua kata nama harus ada di jenis kartu TMS (salah eja ringan ≥ 80% per kata) → MATCH; selain itu MISMATCH", "TMS kosong → SKIPPED_NULL"],
     "hubungan": ["Disamakan ke kelompok: istri, suami, anak, saudara (kakak/adik, laki-laki/perempuan tidak dibedakan), orang tua (ibu/bapak/ayah/mama/papa) → kelompok sama = MATCH", "Kelompok berbeda → MISMATCH", "Kata di luar kelompok: similarity teks ≥ 80% → MATCH"],
 }
@@ -1434,10 +1432,16 @@ def compare_field(column, tms_value, extracted_value):
         if tms_value.strip().upper() in {a.upper() for a in allowed}:
             return "MATCH", 100.0, "Nilai TMS ada di Microsite; tidak dibandingkan dengan ucapan.", tipe
         return "MISMATCH", 0.0, f"Nilai TMS tidak ada di Microsite ({', '.join(allowed)}).", tipe
-    if tipe == "microsite_menyusul":
-        return "SKIPPED_NULL", None, "Persetujuan sharing data dicek dari Microsite; data Microsite belum tersedia.", tipe
+    if tipe == "pdp_tms":
+        if pdp_tms_setuju(tms_value):
+            return "MATCH", 100.0, "TMS: nasabah menyetujui PDP di microsite; jawaban di transkrip dinilai di item scorecard.", tipe
+        return "MISMATCH", 0.0, "TMS persetujuan-data-nasabah bukan Y/1: persetujuan PDP wajib untuk memproses kartu.", tipe
     if tms_value is None:
         return "SKIPPED_NULL", None, "Nilai TMS kosong.", tipe
+    if tipe == "consent_tms":
+        setuju = tms_value.strip().lower() in _PDP_TMS_SETUJU
+        return "MATCH", 100.0, ("TMS consent-nasabah: setuju menerima penawaran produk lain." if setuju else
+                                "TMS consent-nasabah: tidak setuju; tetap dapat dilanjutkan (tidak wajib)."), tipe
     if tipe == "jenis_kartu":
         if extracted_value is None:
             return "MATCH", 100.0, "Jenis kartu tidak disebut di transkrip; TMS terisi dianggap valid.", tipe

@@ -2582,6 +2582,9 @@ def _static_band_reason(row: dict, rule: dict, waived: bool = False) -> str:
         # Aturan "Ascend tidak lengkap": kata tambahan nasabah di luar jumlah kata Ascend
         # diabaikan, angkanya tetap similarity biasa dan tunduk pada band.
         detail += " (kata tambahan nasabah di luar jumlah kata Ascend diabaikan)"
+    if row.get("similarity_roundup_from") is not None and sim >= rule["match_min"]:
+        detail += (f" (dibulatkan dari {_format_percent(row['similarity_roundup_from'])} "
+                   f"ke ambang {_format_percent(rule['match_min'])})")
     if sim >= rule["match_min"]:
         return f"{detail}, sesuai Ascend."
     if sim >= rule["doc_min"]:
@@ -2699,6 +2702,7 @@ def normalize_static_verification(evaluation: dict) -> dict:
         best_static_match,
         four_digit_year_required,
         mention_rows,
+        roundup_to_threshold,
         similarity_nama,
     )
 
@@ -2769,10 +2773,16 @@ def normalize_static_verification(evaluation: dict) -> dict:
             recomputed.append(it)
             continue
         value, score = best
+        # Round-up ke ambang MATCH (dinamis dari band), hanya nama ibu.
+        raw_score = score
+        if field == "nama_ibu_kandung" and bands.get(field):
+            score = roundup_to_threshold(score, bands[field]["match_min"])
+        rolled = score != raw_score
         source = _source_file_of_value(value, usable)
         if (
             v.get("extracted_value") == value
             and v.get("similarity_percent") == score
+            and (not rolled or v.get("similarity_roundup_from") == raw_score)
             and (source is None or v.get("source_file") == source)
         ):
             recomputed.append(it)
@@ -2783,6 +2793,9 @@ def normalize_static_verification(evaluation: dict) -> dict:
         updated.pop("ascend_incomplete", None)
         updated.pop("ascend_alias_matched", None)
         updated.pop("ascend_spelled", None)
+        updated.pop("similarity_roundup_from", None)
+        if rolled:
+            updated["similarity_roundup_from"] = raw_score
         if field == "nama_ibu_kandung":
             # Penanda untuk _static_band_reason. ALIAS didahulukan: bila salah satu nama
             # di "XX ALIAS YY" yang disebut, itulah penjelasannya.

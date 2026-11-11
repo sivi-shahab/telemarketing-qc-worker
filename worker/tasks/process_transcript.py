@@ -78,7 +78,7 @@ from compliance.reference_data import (
     customer_id_from_filenames,
 )
 from compliance.campaign_profile import is_ntb_evaluation
-from compliance.ntb_verification import apply_handphone_belum_dinilai, apply_pdp_supplement_belum_dinilai, apply_persetujuan_data_belum_dinilai, apply_lama_bekerja_verdict, apply_telepon_kantor_verdict, apply_hp_keluarga_verdict, apply_supplement_verdicts, apply_verification_verdicts, ensure_scorecard_items
+from compliance.ntb_verification import apply_handphone_belum_dinilai, apply_pdp_tms_gate, apply_lama_bekerja_verdict, apply_telepon_kantor_verdict, apply_hp_keluarga_verdict, apply_supplement_verdicts, apply_verification_verdicts, ensure_scorecard_items
 from compliance.sales_roster import parse_roster
 from prompt.recording_type import TAG_LABELS, TAG_UTAMA
 from db import crud
@@ -825,8 +825,7 @@ def process_transcript(result_id: str):
                 evaluation = apply_telepon_kantor_verdict(evaluation, _tms_ntb)
                 evaluation = apply_hp_keluarga_verdict(evaluation, _tms_ntb)
                 evaluation = apply_handphone_belum_dinilai(evaluation, _tms_ntb)
-                evaluation = apply_persetujuan_data_belum_dinilai(evaluation, _tms_ntb)
-                evaluation = apply_pdp_supplement_belum_dinilai(evaluation)
+                evaluation = apply_pdp_tms_gate(evaluation, _tms_ntb)
                 evaluation = apply_supplement_verdicts(evaluation, _tms_ntb)
 
             # 5c. Tempelkan JENIS REKAMAN ke tiap blok evidence. Tanpa ini evidence hanya

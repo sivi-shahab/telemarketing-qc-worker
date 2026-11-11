@@ -518,6 +518,25 @@ def similarity_nama_ibu(reference, candidate) -> "float | None":
     return max(values) if values else None
 
 
+# ATURAN ROUND-UP (9 November 2026, permintaan Bank Mega): nilai yang HAMPIR mencapai ambang
+# MATCH dibulatkan naik ke ambangnya, dan angka yang tampil juga ambangnya (78 -> 80%).
+# Bank Mega tidak mau ambangnya diturunkan (alasan psikologi: angka tetap 80%), jadi
+# kelonggarannya dibuat sebagai pembulatan, bukan perubahan ambang. Ambang yang dipakai
+# DINAMIS: diberikan pemanggil (``match_min`` band nama ibu: 80 aturan baru, 90 aturan
+# lama), bukan angka tetap. Hanya MENAIKKAN dan hanya di bawah ambang.
+ROUNDUP_WINDOW = 2.0
+
+
+def roundup_to_threshold(score, threshold, window: float = ROUNDUP_WINDOW) -> "float | None":
+    """``threshold`` bila ``threshold - window <= score < threshold``, selain itu
+    ``score`` apa adanya. Contoh (ambang 80, jendela 2): 78 dan 79 -> 80; 77 tetap 77."""
+    if score is None or threshold is None:
+        return score
+    if threshold - window <= score < threshold:
+        return float(threshold)
+    return score
+
+
 STATIC_SIMILARITY = {
     "tanggal_lahir": similarity_tanggal_lahir,
     "nama_ibu_kandung": similarity_nama_ibu,

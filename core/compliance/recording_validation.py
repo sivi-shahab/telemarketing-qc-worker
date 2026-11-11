@@ -63,8 +63,8 @@ logger = logging.getLogger(__name__)
 #: 2026 jarak antara dua kelompok sangat lebar (buang: maksimum 6m0s/41 segmen; pakai:
 #: minimum 17m12s/99 segmen), jadi angka di bawah tidak menyentuh keduanya — ia hanya
 #: menangkap penggalan ekstrem. Kalibrasi ulang begitu ada batch berlabel yang lebih besar.
-MIN_DURASI_DETIK = 180.0
-MIN_SEGMEN = 20
+MIN_DURASI_DETIK = 60.0
+MIN_SEGMEN = 3
 
 _PRODUK = closing_product_pattern("cashline")
 _SETUJU = r"\bsetuju\b|\bbersedia\b|menyetujui"
