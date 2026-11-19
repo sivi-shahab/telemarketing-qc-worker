@@ -2,7 +2,9 @@ import copy
 import hashlib
 import json
 import logging
+import os
 import threading
+import time
 import uuid
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
@@ -1234,6 +1236,16 @@ def _wib_today_str() -> str:
 # selesai, agent_id/submit_time tidak akan berubah lagi.
 _CASHLINE_ID_MEMO: dict = {}
 _CASHLINE_ID_MEMO_LOCK = Lock()
+# Memo NEGATIF berumur pendek (19 November 2026). Refresh Statistics jalan tiap
+# beberapa menit dan worker stats sengaja tidak membaca cache Redis
+# (``set_redis_read(False)``), sedangkan cache memori data_dwh hanya 300 detik. Hasilnya
+# ~700 id yang memang tidak ada di DWH (404 di KEDUA endpoint) di-probe ulang tiap
+# refresh berat (~64 dtk dari ~150 dtk). Jawaban "PASTI tidak ada" kini ditahan
+# ``_CASHLINE_ID_NEG_TTL_SEC`` (default 1 jam, selaras DWH_REDIS_NEG_TTL_SEC); kegagalan
+# DWH (pasti=False) TIDAK pernah ditahan. Harga yang dibayar: baris DWH yang baru masuk
+# baru terbaca Statistics paling lama setelah TTL ini. ``{cid: waktu_monotonic_dicatat}``.
+_CASHLINE_ID_NEG_TTL_SEC = float(os.getenv("DWH_STATS_NEG_TTL_SEC", "3600"))
+_CASHLINE_ID_NEG_MEMO: dict = {}
 _CASHLINE_FALLBACK_WORKERS = 8
 
 
@@ -1244,27 +1256,46 @@ def _cashline_ids_from_dwh(cids: list) -> dict:
     bukan jumlah semuanya. Kegagalan satu cid tidak menggagalkan yang lain --
     hasilnya cuma dianggap tidak diketahui, sama seperti sebelum ada index ini.
     """
+    now = time.monotonic()
     with _CASHLINE_ID_MEMO_LOCK:
         out = {c: _CASHLINE_ID_MEMO[c] for c in cids if c in _CASHLINE_ID_MEMO}
-        todo = [c for c in cids if c not in _CASHLINE_ID_MEMO]
+        todo = []
+        for c in cids:
+            if c in _CASHLINE_ID_MEMO:
+                continue
+            seen_absent = _CASHLINE_ID_NEG_MEMO.get(c)
+            if seen_absent is not None and (now - seen_absent) < _CASHLINE_ID_NEG_TTL_SEC:
+                out[c] = {"agent_id": None, "submit_time": None}
+                continue
+            todo.append(c)
     if not todo:
         return out
 
     def _one(cid):
         try:
-            row = data_dwh.fetch_bundle(cid).get("cashline") or {}
+            bundle, pasti = data_dwh.fetch_bundle_checked(cid)
         except Exception:  # noqa: BLE001 — DWH down must not break Statistics
-            return cid, None
+            return cid, None, False
+        row = bundle.get("cashline") or {}
+        # "Absen" = DWH menjawab pasti DAN tidak ada baris cashline sama sekali. Baris
+        # yang ada tapi agent_id-nya kosong bisa saja diperbaiki nanti -> tetap boleh
+        # dicoba ulang.
+        absent = bool(pasti) and bundle.get("cashline") is None
         return cid, {
             "agent_id": (row.get("agent_id") or "").strip() or None,
             "submit_time": (row.get("submit_time") or "").strip() or None,
-        }
+        }, absent
 
     with ThreadPoolExecutor(max_workers=_CASHLINE_FALLBACK_WORKERS) as pool:
-        for cid, entry in pool.map(_one, todo):
+        for cid, entry, absent in pool.map(_one, todo):
             if entry is None:
                 continue
             out[cid] = entry
+            if absent:
+                # DWH menjawab pasti (404 di kedua endpoint): tahan sebentar supaya
+                # refresh berikutnya tidak memprobe ulang. Bukan memo permanen.
+                with _CASHLINE_ID_MEMO_LOCK:
+                    _CASHLINE_ID_NEG_MEMO[cid] = time.monotonic()
             # HANYA hasil positif yang di-memo. agent_id untuk tiket yang sudah
             # selesai tidak akan berubah, jadi aman disimpan selamanya. Sebaliknya
             # hasil KOSONG tidak boleh di-memo: itu bisa berarti DWH sedang error
