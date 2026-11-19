@@ -1,10 +1,13 @@
 import copy
+import functools
 import hashlib
 import json
 import logging
 import threading
+import time
 import uuid
 from collections import defaultdict
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from threading import Lock
@@ -1216,6 +1219,67 @@ def _wib_today_str() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Memo per-perhitungan untuk index berat Statistics (19 November 2026)
+# ---------------------------------------------------------------------------
+# ``/stats/ai_status_timeseries`` untuk kombinasi filter baru butuh 24-40 dtk (> timeout
+# axios 30 dtk). Dalam SATU perhitungan, index di bawah dipanggil berulang dengan
+# argumen yang sama (``cashline_agent_index`` 6x, ``reference_snapshot_index`` 2x,
+# ``cashline_change_flags_index`` 2x = ~14 dtk), dan tiap panggilan memindai seluruh
+# ``result_data.result_json``.
+#
+# OPT-IN: hanya aktif di dalam ``with request_memo(db):``. Di luar blok itu perilakunya
+# tidak berubah — worker/evaluasi yang memakai satu sesi lintas commit tidak pernah
+# membaca data basi. Hasil yang dikembalikan selalu SALINAN, jadi pemanggil yang
+# mengubah hasilnya tidak bisa merusak memo.
+_MEMO_KEY = "_request_memo"
+
+
+@contextmanager
+def request_memo(db):
+    """Aktifkan memo index berat selama blok ini (bersarang memakai memo luar)."""
+    info = getattr(db, "info", None)
+    if info is None or _MEMO_KEY in info:
+        yield
+        return
+    info[_MEMO_KEY] = {}
+    try:
+        yield
+    finally:
+        info.pop(_MEMO_KEY, None)
+
+
+def _memo_cids_key(cids):
+    """Kunci stabil untuk argumen ``cids``; ``False`` bila tak bisa dikunci aman
+    (mis. generator yang habis dibaca) -> pemanggil melewati memo."""
+    if cids is None:
+        return None
+    if isinstance(cids, (list, tuple, set, frozenset)):
+        return frozenset(str(c).strip() for c in cids if c)
+    return False
+
+
+def _per_request_memo(fn):
+    """Bungkus index berat ``fn(db[, cids])`` dengan memo ``request_memo``."""
+
+    @functools.wraps(fn)
+    def wrapper(db, *args, **kwargs):
+        info = getattr(db, "info", None)
+        memo = info.get(_MEMO_KEY) if info is not None else None
+        if memo is None:
+            return fn(db, *args, **kwargs)
+        cids = args[0] if args else kwargs.get("cids")
+        key = _memo_cids_key(cids)
+        if key is False or len(args) > 1 or set(kwargs) - {"cids"}:
+            return fn(db, *args, **kwargs)
+        mkey = (fn.__name__, key)
+        if mkey not in memo:
+            memo[mkey] = fn(db, *args, **kwargs)
+        return copy.deepcopy(memo[mkey])
+
+    return wrapper
+
+
+# ---------------------------------------------------------------------------
 # Index cid -> (agent_id, submit_time)
 # ---------------------------------------------------------------------------
 # Tabel lokal ``tms_cashline`` sudah TIDAK diisi lagi sejak reference data pindah
@@ -1329,6 +1393,7 @@ def load_dates_by_ticket(db: Session, ticket_ids: Iterable[str]) -> dict:
     return dict(out)
 
 
+@_per_request_memo
 def cashline_agent_index(db: Session) -> dict:
     """``{cid: {"agent_id": str|None, "submit_time": str|None}}`` untuk SEMUA result.
 
@@ -1600,9 +1665,14 @@ def _stats_signature(db: Session) -> str:
     )
 
 
+class SnapshotPending(Exception):
+    """Snapshot untuk ``scope_key`` ini sedang dihitung di latar belakang dan belum
+    jadi dalam ``cold_wait_sec``. Router menjawab HTTP 202 supaya klien mencoba lagi."""
+
+
 def get_or_build_stats_snapshot(
     db: Session, force: bool = False, scope_key: str = "", compute_fn=None,
-    session_factory=None,
+    session_factory=None, cold_wait_sec: float | None = None,
 ) -> dict:
     """Return the Statistics dashboard payload, recomputing it only when the
     underlying data changes (auto-invalidating cache).
@@ -1626,6 +1696,13 @@ def get_or_build_stats_snapshot(
     dan snapshot lama ber-versi format sama sudah ada, snapshot lama dikembalikan
     SEGERA dan snapshot baru dihitung di thread (``_start_snapshot_refresh``).
     Snapshot yang belum ada, versi format berbeda, atau ``force`` tetap sinkron.
+
+    ``cold_wait_sec`` (19 November 2026): bila diisi (dan ``session_factory`` ada),
+    snapshot yang BELUM ada / beda versi format TIDAK dihitung di dalam request.
+    Hitungannya dijalankan di latar belakang; request menunggu paling lama
+    ``cold_wait_sec``, lalu mengembalikan hasilnya bila sudah jadi atau melempar
+    ``SnapshotPending`` bila belum. Dipakai ``/stats/ai_status_timeseries``: tiap
+    kombinasi filter baru butuh 24-40 dtk, melewati timeout axios 30 dtk.
     """
     sig = _stats_signature(db)
     latest = (
@@ -1652,9 +1729,41 @@ def get_or_build_stats_snapshot(
         _start_snapshot_refresh(session_factory, scope_key, compute_fn, sig)
         return latest.payload
 
+    if cold_wait_sec is not None and session_factory is not None and not force:
+        _start_snapshot_refresh(session_factory, scope_key, compute_fn, sig)
+        ready = _await_snapshot(session_factory, scope_key, sig, cold_wait_sec)
+        if ready is not None:
+            return ready
+        raise SnapshotPending(scope_key)
+
     payload = _compute_stats_payload(db, compute_fn)
     payload["_signature"] = sig
     return _store_stats_snapshot(db, scope_key, payload)
+
+
+def _await_snapshot(session_factory, scope_key: str, sig: str, wait_sec: float,
+                    poll_sec: float = 0.5):
+    """Tunggu snapshot ``scope_key`` ber-signature ``sig`` muncul (dibuat thread
+    latar). Tiap polling memakai sesi pendek sendiri supaya melihat data yang sudah
+    di-commit. ``None`` bila lewat ``wait_sec``."""
+    deadline = time.monotonic() + wait_sec
+    while True:
+        session = session_factory()
+        try:
+            row = (
+                session.query(StatsSnapshot)
+                .filter(StatsSnapshot.scope_key == scope_key)
+                .order_by(desc(StatsSnapshot.id))
+                .first()
+            )
+            payload = row.payload if row is not None else None
+        finally:
+            session.close()
+        if isinstance(payload, dict) and payload.get("_signature") == sig:
+            return payload
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(poll_sec)
 
 
 def _store_stats_snapshot(db: Session, scope_key: str, payload: dict) -> dict:
@@ -2382,6 +2491,7 @@ def compute_tms_change_flags(cashline_row: Optional[dict]) -> dict:
     }
 
 
+@_per_request_memo
 def cashline_change_flags_index(db: Session, cids=None) -> dict[str, dict]:
     """``{cid: {"kantor","rumah","npwp","nik": bool}}`` dari snapshot cashline yang
     SUDAH tersimpan di ``result_data.result_json["reference_data"]["cashline"]`` --
@@ -2427,6 +2537,7 @@ def cashline_change_flags_index(db: Session, cids=None) -> dict[str, dict]:
     return index
 
 
+@_per_request_memo
 def reference_snapshot_index(db: Session, cids=None) -> dict[str, dict]:
     """``{cid: {"cashline": bool, "customer": bool, "agent_id": str|None}}`` dari
     snapshot ``reference_data`` yang SUDAH tersimpan di

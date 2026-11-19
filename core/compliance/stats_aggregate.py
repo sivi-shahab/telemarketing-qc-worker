@@ -1317,11 +1317,13 @@ def _missing_docs_map(
         cid = cid_by_rid.get(rid)
         uploaded = types_by_rid.get(rid, set())
         f = flags.get(cid or "", {})
-        if doc_requirements_waived(_normalized_json(eval_by_id.get(rid))):
+        # Normalisasi verifikasi (~1,3 ms/baris) cukup SEKALI per baris — dulu dipanggil
+        # sampai 3x di iterasi ini (19 November 2026).
+        _nj = _normalized_json(eval_by_id.get(rid))
+        if doc_requirements_waived(_nj):
             out[rid] = False
             continue
         # NTB: KTP selalu wajib (usia 21-65, NIK, kewarganegaraan), tidak ada band TMS.
-        _nj = _normalized_json(eval_by_id.get(rid))
         if isinstance(_nj, dict) and is_ntb_evaluation(_nj.get("evaluation")):
             out[rid] = "ktp" not in uploaded
             continue
@@ -1339,7 +1341,7 @@ def _missing_docs_map(
             # dan tidak pernah singgah di PENDING. Terjadi pada 38 tiket cashline.
             missing = any(
                 dt not in uploaded
-                for dt in card_holder_doc_types(_normalized_json(eval_by_id.get(rid)))
+                for dt in card_holder_doc_types(_nj)
             )
         out[rid] = missing
     return out
@@ -2777,6 +2779,16 @@ def _default_timeseries_range(granularity: str, anchor: date):
 
 
 def compute_ai_status_timeseries(db, customer_ids, campaign, granularity, start, end, offset=0) -> dict:
+    """Lihat ``_compute_ai_status_timeseries``. Index berat yang dipanggil berulang
+    dengan argumen sama (``cashline_agent_index`` 6x, dst.) dibaca SEKALI per
+    perhitungan lewat ``crud.request_memo`` (19 November 2026; 24-40 dtk -> lebih
+    singkat). Hasilnya sama persis — memo hanya berlaku selama pemanggilan ini."""
+    with crud.request_memo(db):
+        return _compute_ai_status_timeseries(
+            db, customer_ids, campaign, granularity, start, end, offset)
+
+
+def _compute_ai_status_timeseries(db, customer_ids, campaign, granularity, start, end, offset=0) -> dict:
     """Approve/Return counts bucketed over time (WIB ``uploaded_at``) for the 100%
     stacked column chart on the Statistics page.
 
